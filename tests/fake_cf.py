@@ -117,7 +117,8 @@ def seed():
 
 
 GH = {}      # repo -> list of releases (newest first)
-LEAKY_SEARCH = False   # True: behave like a search that ignores the game-version filter
+LEAKY_SEARCH = False
+WAGO_NO_POPULAR = False   # True: behave like a search that ignores the game-version filter
 RAW = {}     # "owner/repo/main/path" -> bytes (raw.githubusercontent.com)
 GH_ASSETS = {}  # asset id -> bytes
 _gh_id = [500]
@@ -152,9 +153,10 @@ _wago_n = [0]
 WBASE = None
 
 
-def wago_addon(wid, slug, name):
+def wago_addon(wid, slug, name, categories=(), downloads=0):
     WAGO[wid] = {"id": wid, "slug": slug, "name": name, "display_name": name, "authors": ["WagoAuthor"],
-                 "website_url": f"https://addons.wago.io/addons/{slug}", "rr": {}}
+                 "website_url": f"https://addons.wago.io/addons/{slug}", "rr": {},
+                 "categories": [{"id": i, "display_name": c} for i, c in enumerate(categories)], "download_count": downloads}
 
 
 def wago_release(wid, label, entries, channel="stable", created=None):
@@ -327,9 +329,15 @@ class H(BaseHTTPRequestHandler):
             data = WAGO_FILES[int(p.split("/")[3])]
             self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
             return self.wfile.write(data)
+        if p == "/wago/api/external/addons/popular":
+            if WAGO_NO_POPULAR:
+                return self.send_json(404, {"message": "not found"})
+            res = [a for a in WAGO.values() if rr_of(a) or LEAKY_SEARCH]
+            res.sort(key=lambda a: -a["download_count"])
+            return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count")} for a in res]})
         if p == "/wago/api/external/addons/_search":
             qq = (q.get("query") or [""])[0].lower()
-            return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url")}
+            return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count")}
                                                  for a in WAGO.values() if qq in a["name"].lower() and (rr_of(a) or LEAKY_SEARCH)]})
         if p == "/wago/api/external/addons/_recents" and method == "POST":
             return self.send_json(200, {"addons": {i: {"name": WAGO[i]["name"], "website_url": WAGO[i]["website_url"],

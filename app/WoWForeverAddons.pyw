@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.8.1"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -1010,6 +1010,19 @@ class Wago:
     def search(self, query: str) -> list[dict]:
         return self._call("GET", "/api/external/addons/_search", {"query": query, "game_version": self.gv}).get("data") or []
 
+    _popular: dict = {}
+
+    def popular(self) -> list[dict]:
+        """Wago's most popular addons for this game version (what its own app shows before you search)."""
+        hit = Wago._popular.get(self.gv)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        r = self._call("GET", "/api/external/addons/popular", {"game_version": self.gv})
+        data = r if isinstance(r, list) else (r.get("data") or r.get("addons") or [] if isinstance(r, dict) else [])
+        data = [a for a in data if isinstance(a, dict)]
+        Wago._popular[self.gv] = (time.time(), data)
+        return data
+
     def slugs(self) -> dict:
         hit = Wago._slugs.get(self.gv)
         if hit and time.time() - hit[0] < 3600:
@@ -1054,6 +1067,19 @@ def _ts(iso: str | None) -> float | None:
         return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+def wago_categories(a: dict) -> list[str]:
+    """Category names from a Wago addon entry, whichever shape Wago sends them in."""
+    out = []
+    raw = a.get("categories") or a.get("category") or a.get("tags") or []
+    for c in raw if isinstance(raw, list) else [raw]:
+        name = c if isinstance(c, str) else (c.get("display_name") or c.get("name") or c.get("title") or "") \
+            if isinstance(c, dict) else ""
+        name = str(name).strip()
+        if name and name not in out:
+            out.append(name[:40])
+    return out[:6]
 
 
 def norm_version(v: str | None) -> str:
@@ -2379,18 +2405,28 @@ class Manager:
         if not wg:
             raise UserError("Add your Wago key in Settings to browse Wago.")
         q = (q or "").strip()
-        if len(q) < 2:
+        if len(q) == 1:
             return [], 0
         managed = {(r.get("slug") or "").lower() for r in self.store.addons.values() if self._folders_present(r)}
         managed_ids = {str((r.get("wago") or {}).get("id")) for r in self.store.addons.values()
                        if r.get("wago") and self._folders_present(r)}
-        hits = [a for a in wg.search(q)[:60] if a.get("id")]
-        has_build = None
+        try:
+            found = wg.search(q) if q else wg.popular()
+        except UserError as e:
+            if q:
+                raise
+            raise UserError(f"Wago didn't send its list of popular addons ({e}). Type a name to search instead.")
+        hits = [a for a in found[:100] if a.get("id")]
+        has_build, newest = None, {}
         try:   # same lookup the update check uses: which of these have a WoW Forever release on Wago
             rec = wg.recents([str(a["id"]) for a in hits]) if hits else {}
-            has_build = {str(i) for i, v in rec.items()
-                         if any(isinstance(r, dict) and r.get("created_at")
-                                for r in ((v or {}).get("recent_releases") or {}).values())}
+            has_build = set()
+            for i, v in rec.items():
+                dates = [r.get("created_at") for r in ((v or {}).get("recent_releases") or {}).values()
+                         if isinstance(r, dict) and r.get("created_at")]
+                if dates:
+                    has_build.add(str(i))
+                    newest[str(i)] = max(dates)
         except UserError:
             pass
         out, hidden = [], 0
@@ -2406,6 +2442,8 @@ class Manager:
                         "authors": [x if isinstance(x, str) else (x.get("name") or "") for x in a.get("authors") or []],
                         "downloads": int(a.get("download_count") or a.get("downloads") or 0),
                         "url": a.get("website_url") or f"https://addons.wago.io/addons/{slug}",
+                        "categories": wago_categories(a),
+                        "updated": newest.get(str(a["id"])) or a.get("updated_at") or a.get("modified_at") or "",
                         "installed": slug.lower() in managed or str(a.get("id")) in managed_ids, "forever": fv})
         return out, hidden
 
@@ -5176,6 +5214,8 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
+          <select id="wcat" hidden><option value="">All categories</option></select>
+          <select id="wsort" hidden><option value="pop">Most popular</option><option value="dl">Most downloaded</option><option value="new">Recently updated</option><option value="name">Name</option></select>
           <select id="bsort">
             <option value="2">Most popular</option>
             <option value="6">Most downloaded</option>
@@ -5786,15 +5826,29 @@ async function pumpQueue(){
 async function wSearch(){
   const my = ++B.seq;
   B.loading = true; B.error = ""; B.results = []; B.next = null; renderBrowse();
-  if (B.q.length < 2){ B.loading = false; B.loaded = false; renderBrowse(); return; }
+  if (B.q.length === 1){ B.loading = false; B.loaded = false; renderBrowse(); return; }
   try{ const r = await post("/api/wago_search",{q:B.q, all:B.all}); if (my !== B.seq) return; B.results = r.results; B.hidden = r.hidden || 0; B.total = r.results.length; B.loaded = true; }
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
 }
+const W = {cat:"", sort:"pop"};
+function wagoCats(){
+  const sel = $("#wcat"), names = [...new Set(B.results.flatMap(r=>r.categories||[]))].sort((a,b)=>a.localeCompare(b));
+  if (W.cat && !names.includes(W.cat)) names.unshift(W.cat);
+  const key = names.join("|");
+  if (sel.dataset.k !== key){ sel.dataset.k = key; sel.replaceChildren(h("option",{value:""},"All categories"), ...names.map(n=>h("option",{value:n}, n))); }
+  sel.value = W.cat; sel.hidden = !names.length;
+}
+function wagoShown(){
+  let list = B.results.filter(r => !W.cat || (r.categories||[]).includes(W.cat));
+  const by = {dl:(a,b)=>b.downloads-a.downloads, new:(a,b)=>String(b.updated||"").localeCompare(String(a.updated||"")), name:(a,b)=>a.name.localeCompare(b.name)}[W.sort];
+  return by ? [...list].sort(by) : list;
+}
 function renderWago(box){
   if (B.error){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"Wago search failed"), h("br"), B.error))); return; }
-  if (!B.results.length){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, B.loading ? "Searching Wago…" : (B.q.length < 2 ? "Type at least two letters to search Wago's WoW Forever addons." : "Nothing on Wago matches that.")))); return; }
-  box.replaceChildren(h("div",{class:"grid"}, ...B.results.map(r=>{
+  const shown = wagoShown();
+  if (!shown.length){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, B.loading ? (B.q ? "Searching Wago…" : "Loading Wago's popular addons…") : (B.q.length === 1 ? "Type one more letter…" : W.cat ? "Nothing in that category here." : "Nothing on Wago matches that.")))); return; }
+  box.replaceChildren(h("div",{class:"grid"}, ...shown.map(r=>{
     const busyNow = S && S.job.running;
     const btn = r.installed ? h("span",{class:"tag ok"},"Installed ✓")
       : h("button",{class:"btn small primary",disabled:busyNow,title:"If CurseForge has it for WoW Forever too, it's installed from there and Wago is kept as a second source — whichever has the higher version number wins. Otherwise it's installed and updated from Wago.",onclick:e=>{ e.stopPropagation(); act("/api/add_wago",{id:r.id}); }},"Install");
@@ -5802,7 +5856,7 @@ function renderWago(box){
       logoEl(r.logo, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
         h("div",{class:"sum"}, r.summary),
-        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), noForever(r), h("span",{class:"sp"}), btn)));
+        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, r.updated ? h("span",{}, fmtDate(r.updated)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), noForever(r), h("span",{class:"sp"}), btn)));
   })));
 }
 function noForever(r){
@@ -5821,9 +5875,12 @@ function renderBrowse(){
   $("#srcBar").hidden = !wagoOk;
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
+  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : "Browse CurseForge";
   $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
+  $("#wsort").hidden = B.src !== "wago";
+  if (B.src === "wago") wagoCats(); else $("#wcat").hidden = true;
   $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";
-  if (B.src === "wago"){ renderWago($("#bres")); setMeta(B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""); $("#bmore").hidden = true; return; }
+  if (B.src === "wago"){ renderWago($("#bres")); const n = wagoShown().length; setMeta(B.loaded && !B.error ? n + " addon" + (n===1?"":"s") + (B.q ? ` on Wago matching “${B.q}”` : " — popular on Wago") + (W.cat ? " in " + W.cat : "") : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
   if (S && (!S.config.has_key || !S.config.addons_dir_ok)){
@@ -6116,6 +6173,8 @@ $("#dbar").onclick = ()=>setDrawer(!drawerOpen);
 document.querySelectorAll(".side .tab").forEach(t=>t.onclick=()=>showView(t.dataset.v));
 let bTimer=null;
 $("#bq").addEventListener("input", ()=>{ clearTimeout(bTimer); bTimer=setTimeout(()=>{ B.q=$("#bq").value.trim(); bSearch(false); }, 350); });
+$("#wcat").addEventListener("change", ()=>{ W.cat = $("#wcat").value; renderBrowse(); });
+$("#wsort").addEventListener("change", ()=>{ W.sort = $("#wsort").value; renderBrowse(); });
 $("#bq").addEventListener("keydown", e=>{ if (e.key==="Enter"){ clearTimeout(bTimer); B.q=$("#bq").value.trim(); bSearch(false); } });
 $("#bsort").onchange = ()=>{ B.sort=$("#bsort").value; bSearch(false); };
 $("#bcat").onchange = ()=>{ B.cat=$("#bcat").value; bSearch(false); };
