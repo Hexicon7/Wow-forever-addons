@@ -58,7 +58,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.7.1"
+APP_VERSION = "3.7.2"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -1030,6 +1030,15 @@ def file_sha1(f: dict) -> str | None:
         if h.get("algo") == 1 and h.get("value"):
             return h["value"]
     return None
+
+
+def has_forever_file(mod: dict, type_id: int | None) -> bool:
+    """Does CurseForge list a file of this addon for our game version (WoW Forever)?"""
+    if not type_id:
+        return True
+    if any(x.get("gameVersionTypeId") == type_id for x in mod.get("latestFilesIndexes") or []):
+        return True
+    return any(type_id in file_type_ids(f) for f in mod.get("latestFiles") or [])
 
 
 def file_type_ids(f: dict) -> set[int]:
@@ -2308,16 +2317,29 @@ class Manager:
                               "from": (r["previous"][0] or {}).get("installed_version")})
         return {"at": b.get("at"), "items": items} if items else None
 
-    def wago_search(self, q: str) -> list[dict]:
+    def wago_search(self, q: str, show_all: bool = False) -> tuple[list[dict], int]:
         wg = self.wago()
         if not wg:
             raise UserError("Add your Wago key in Settings to browse Wago.")
         q = (q or "").strip()
         if len(q) < 2:
-            return []
+            return [], 0
         managed = {(r.get("slug") or "").lower() for r in self.store.addons.values()}
-        out = []
-        for a in wg.search(q)[:60]:
+        hits = [a for a in wg.search(q)[:60] if a.get("id")]
+        has_build = None
+        try:   # same lookup the update check uses: which of these have a WoW Forever release on Wago
+            rec = wg.recents([str(a["id"]) for a in hits]) if hits else {}
+            has_build = {str(i) for i, v in rec.items()
+                         if any(isinstance(r, dict) and r.get("created_at")
+                                for r in ((v or {}).get("recent_releases") or {}).values())}
+        except UserError:
+            pass
+        out, hidden = [], 0
+        for a in hits:
+            fv = has_build is None or str(a["id"]) in has_build
+            if not fv and not show_all:
+                hidden += 1
+                continue
             slug = a.get("slug") or ""
             out.append({"id": a.get("id"), "slug": slug, "name": a.get("display_name") or a.get("name") or slug,
                         "summary": a.get("summary") or a.get("description") or "",
@@ -2325,8 +2347,8 @@ class Manager:
                         "authors": [x if isinstance(x, str) else (x.get("name") or "") for x in a.get("authors") or []],
                         "downloads": int(a.get("download_count") or a.get("downloads") or 0),
                         "url": a.get("website_url") or f"https://addons.wago.io/addons/{slug}",
-                        "installed": slug.lower() in managed})
-        return out
+                        "installed": slug.lower() in managed, "forever": fv})
+        return out, hidden
 
     def details(self, mod_id: int) -> dict:
         """Everything the detail panel shows. Fetched live each time (CurseForge data isn't stored)."""
@@ -4242,7 +4264,8 @@ class App:
             m.run_job("Undoing the last update", m.op_undo_batch)
             return {"ok": True}
         if path == "/api/wago_search":
-            return {"results": m.wago_search(str(body.get("q") or ""))}
+            res, hidden = m.wago_search(str(body.get("q") or ""), bool(body.get("all")))
+            return {"results": res, "hidden": hidden, "all": bool(body.get("all"))}
         if path == "/api/details":
             return m.details(int(body.get("id")))
         if path == "/api/file_changelog":
@@ -4279,25 +4302,42 @@ class App:
         index = min(max(0, int(body.get("index") or 0)), 9950)
         query = str(body.get("q") or "").strip()[:100]
         cat = body.get("category") or None
-        mods, pag = cf.search(query, type_id, sort, index, 30, int(cat) if cat else None)
-        total = int(pag.get("totalCount") or 0)
+        show_all = bool(body.get("all"))
+        # CurseForge's own game-version filter lets through addons that have no WoW Forever file at all,
+        # so each result is checked here too. Fetch a few more pages so a filtered page isn't nearly empty.
+        results, hidden, idx, total, mods, rounds = [], 0, index, 0, [], 0
+        while True:
+            mods, pag = cf.search(query, type_id, sort, idx, 50, int(cat) if cat else None)
+            total = int(pag.get("totalCount") or 0)
+            rounds += 1
+            idx += len(mods)
+            for mod in mods:
+                fv = has_forever_file(mod, type_id)
+                if not fv and not show_all:
+                    hidden += 1
+                    continue
+                results.append(self._search_result(mod, fv))
+            if show_all or len(results) >= 24 or not mods or idx >= min(total, 10000) or rounds >= 4:
+                break
         # CurseForge only pages through the first 10,000 results.
-        next_index = index + len(mods) if mods and index + len(mods) < min(total, 10000) else None
-        results = []
-        for mod in mods:
-            results.append({
-                "id": mod["id"], "name": mod.get("name") or str(mod["id"]),
-                "summary": mod.get("summary") or "",
-                "authors": [a.get("name") for a in (mod.get("authors") or []) if a.get("name")][:2],
-                "logo": (mod.get("logo") or {}).get("thumbnailUrl") or "",
-                "downloads": int(mod.get("downloadCount") or 0),
-                "updated": mod.get("dateModified") or mod.get("dateReleased"),
-                "url": Manager._mod_url(mod),
-                "categories": [c.get("name") for c in (mod.get("categories") or []) if c.get("name")][:2],
-                "manual_only": mod.get("allowModDistribution") is False,
-                "github": github_repo_of(mod),
-            })
-        return {"results": results, "total": total, "next": next_index}
+        next_index = idx if mods and idx < min(total, 10000) else None
+        return {"results": results, "total": total, "next": next_index, "hidden": hidden, "all": show_all}
+
+    @staticmethod
+    def _search_result(mod: dict, forever: bool) -> dict:
+        return {
+            "id": mod["id"], "name": mod.get("name") or str(mod["id"]),
+            "summary": mod.get("summary") or "",
+            "authors": [a.get("name") for a in (mod.get("authors") or []) if a.get("name")][:2],
+            "logo": (mod.get("logo") or {}).get("thumbnailUrl") or "",
+            "downloads": int(mod.get("downloadCount") or 0),
+            "updated": mod.get("dateModified") or mod.get("dateReleased"),
+            "url": Manager._mod_url(mod),
+            "categories": [c.get("name") for c in (mod.get("categories") or []) if c.get("name")][:2],
+            "manual_only": mod.get("allowModDistribution") is False,
+            "github": github_repo_of(mod),
+            "forever": forever,
+        }
 
     def make_handler(self):
         app = self
@@ -5439,7 +5479,7 @@ $("#shade").onclick = closeDetail;
 $("#lightbox").onclick = ()=>$("#lightbox").classList.remove("show");
 
 // ---------- Browse ----------
-const B = {q:"", sort:"2", cat:"", results:[], total:0, next:null, loading:false, error:"", loaded:false, seq:0, catsLoaded:false, src:"cf"};
+const B = {q:"", sort:"2", cat:"", results:[], total:0, next:null, loading:false, error:"", loaded:false, seq:0, catsLoaded:false, src:"cf", all:false, hidden:0};
 const queue = [];
 let sending = null;
 async function bSearch(append){
@@ -5451,11 +5491,12 @@ async function bSearch(append){
   renderBrowse();
   try{
     const r = await fetch("/api/search",{method:"POST",headers:{"X-WFAM":"1","Content-Type":"application/json"},
-      body:JSON.stringify({q:B.q, sort:B.sort, category:B.cat, index: append ? B.next : 0})});
+      body:JSON.stringify({q:B.q, sort:B.sort, category:B.cat, index: append ? B.next : 0, all:B.all})});
     const j = await r.json().catch(()=>({}));
     if (my !== B.seq) return;
     if (!r.ok) throw new Error(j.error || ("HTTP "+r.status));
     B.results = append ? B.results.concat(j.results) : j.results;
+    B.hidden = (append ? B.hidden : 0) + (j.hidden || 0);
     B.total = j.total; B.next = j.next; B.loaded = true;
   }catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
@@ -5485,7 +5526,7 @@ async function wSearch(){
   const my = ++B.seq;
   B.loading = true; B.error = ""; B.results = []; B.next = null; renderBrowse();
   if (B.q.length < 2){ B.loading = false; B.loaded = false; renderBrowse(); return; }
-  try{ const r = await post("/api/wago_search",{q:B.q}); if (my !== B.seq) return; B.results = r.results; B.total = r.results.length; B.loaded = true; }
+  try{ const r = await post("/api/wago_search",{q:B.q, all:B.all}); if (my !== B.seq) return; B.results = r.results; B.hidden = r.hidden || 0; B.total = r.results.length; B.loaded = true; }
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
 }
@@ -5500,8 +5541,18 @@ function renderWago(box){
       logoEl(r.logo, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
         h("div",{class:"sum"}, r.summary),
-        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), h("span",{class:"sp"}), btn)));
+        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), noForever(r), h("span",{class:"sp"}), btn)));
   })));
+}
+function noForever(r){
+  return r.forever === false ? h("span",{class:"tag warn",title:"No WoW Forever build is listed for this addon — it was probably made for another version of WoW and may not work."},"no Forever version") : null;
+}
+function setMeta(text){
+  const el = $("#bmeta"); el.replaceChildren(text);
+  if (!text) return;
+  const flip = (label)=>h("button",{class:"linkbtn",onclick:()=>{ B.all = !B.all; bSearch(false); }}, label);
+  if (B.all) el.append(" · ", flip("Only WoW Forever addons"));
+  else if (B.hidden) el.append(` · ${B.hidden} for other WoW versions hidden · `, flip("Show them"));
 }
 function renderBrowse(){
   if ($("#vBrowse").hidden) return;
@@ -5511,7 +5562,7 @@ function renderBrowse(){
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
   $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
   $("#srcHint").textContent = B.src === "wago" ? "Addons are installed through CurseForge when they're there too; Wago keeps them updated when it has a newer release." : "";
-  if (B.src === "wago"){ renderWago($("#bres")); $("#bmeta").textContent = B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""; $("#bmore").hidden = true; return; }
+  if (B.src === "wago"){ renderWago($("#bres")); setMeta(B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
   if (S && (!S.config.has_key || !S.config.addons_dir_ok)){
@@ -5539,12 +5590,13 @@ function renderBrowse(){
           h("div",{class:"t"}, r.name),
           h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
           h("div",{class:"sum"}, r.summary),
-          h("div",{class:"meta"}, h("span",{}, "⬇ "+fmtNum(r.downloads)), r.updated ? h("span",{}, fmtDate(r.updated)) : null, via, h("span",{class:"sp"}), btn)));
+          h("div",{class:"meta"}, h("span",{}, "⬇ "+fmtNum(r.downloads)), r.updated ? h("span",{}, fmtDate(r.updated)) : null, via, noForever(r), h("span",{class:"sp"}), btn)));
       card.addEventListener("click", e=>{ if (!e.target.closest("button,a")) openDetail(r.id); });
       return card;
     })));
   }
-  $("#bmeta").textContent = B.loaded && !B.error ? (B.total >= 10000 ? "10,000+ addons" : `${B.total.toLocaleString()} addon${B.total===1?"":"s"}`) + " with a WoW Forever version" + (B.q ? ` matching “${B.q}”` : "") : "";
+  setMeta(B.loaded && !B.error ? (B.all ? (B.total >= 10000 ? "10,000+ addons" : `${B.total.toLocaleString()} addon${B.total===1?"":"s"}`) + " on CurseForge, all game versions"
+                                         : "WoW Forever addons") + (B.q ? ` matching “${B.q}”` : "") : "");
   $("#bmore").hidden = !(B.next !== null && !B.error);
   $("#bMoreBtn").disabled = B.loading; $("#bMoreBtn").textContent = B.loading ? "Loading…" : "Show more";
 }

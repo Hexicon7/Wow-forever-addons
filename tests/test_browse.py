@@ -21,7 +21,7 @@ try:
     pg.goto("http://127.0.0.1:47996/"); time.sleep(1)
     pg.click(".tab[data-v=browse]"); pg.wait_for_selector(".res"); time.sleep(0.4)
     n = pg.locator(".res").count(); meta = pg.inner_text("#bmeta")
-    check(n == 30 and "53 addons" in meta, f"popular list first page: {n} rows, '{meta}'")  # 6 forever mods + 45 filler; classic-only & beta... 
+    check(n == 50 and "WoW Forever addons" in meta, f"popular list first page: {n} rows, '{meta}'")  # 6 forever mods + 45 filler; classic-only & beta... 
     check("Classic Only" not in pg.inner_text("#bres"), "addons without a Forever file are hidden")
     pg.click("#bMoreBtn"); time.sleep(0.8)
     check(pg.locator(".res").count() == 53 and pg.locator("#bmore").is_hidden(), f"show more loads the rest ({pg.locator('.res').count()})")

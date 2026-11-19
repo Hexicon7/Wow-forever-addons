@@ -889,7 +889,7 @@ $("#shade").onclick = closeDetail;
 $("#lightbox").onclick = ()=>$("#lightbox").classList.remove("show");
 
 // ---------- Browse ----------
-const B = {q:"", sort:"2", cat:"", results:[], total:0, next:null, loading:false, error:"", loaded:false, seq:0, catsLoaded:false, src:"cf"};
+const B = {q:"", sort:"2", cat:"", results:[], total:0, next:null, loading:false, error:"", loaded:false, seq:0, catsLoaded:false, src:"cf", all:false, hidden:0};
 const queue = [];
 let sending = null;
 async function bSearch(append){
@@ -901,11 +901,12 @@ async function bSearch(append){
   renderBrowse();
   try{
     const r = await fetch("/api/search",{method:"POST",headers:{"X-WFAM":"1","Content-Type":"application/json"},
-      body:JSON.stringify({q:B.q, sort:B.sort, category:B.cat, index: append ? B.next : 0})});
+      body:JSON.stringify({q:B.q, sort:B.sort, category:B.cat, index: append ? B.next : 0, all:B.all})});
     const j = await r.json().catch(()=>({}));
     if (my !== B.seq) return;
     if (!r.ok) throw new Error(j.error || ("HTTP "+r.status));
     B.results = append ? B.results.concat(j.results) : j.results;
+    B.hidden = (append ? B.hidden : 0) + (j.hidden || 0);
     B.total = j.total; B.next = j.next; B.loaded = true;
   }catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
@@ -935,7 +936,7 @@ async function wSearch(){
   const my = ++B.seq;
   B.loading = true; B.error = ""; B.results = []; B.next = null; renderBrowse();
   if (B.q.length < 2){ B.loading = false; B.loaded = false; renderBrowse(); return; }
-  try{ const r = await post("/api/wago_search",{q:B.q}); if (my !== B.seq) return; B.results = r.results; B.total = r.results.length; B.loaded = true; }
+  try{ const r = await post("/api/wago_search",{q:B.q, all:B.all}); if (my !== B.seq) return; B.results = r.results; B.hidden = r.hidden || 0; B.total = r.results.length; B.loaded = true; }
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
 }
@@ -950,8 +951,18 @@ function renderWago(box){
       logoEl(r.logo, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
         h("div",{class:"sum"}, r.summary),
-        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), h("span",{class:"sp"}), btn)));
+        h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), noForever(r), h("span",{class:"sp"}), btn)));
   })));
+}
+function noForever(r){
+  return r.forever === false ? h("span",{class:"tag warn",title:"No WoW Forever build is listed for this addon — it was probably made for another version of WoW and may not work."},"no Forever version") : null;
+}
+function setMeta(text){
+  const el = $("#bmeta"); el.replaceChildren(text);
+  if (!text) return;
+  const flip = (label)=>h("button",{class:"linkbtn",onclick:()=>{ B.all = !B.all; bSearch(false); }}, label);
+  if (B.all) el.append(" · ", flip("Only WoW Forever addons"));
+  else if (B.hidden) el.append(` · ${B.hidden} for other WoW versions hidden · `, flip("Show them"));
 }
 function renderBrowse(){
   if ($("#vBrowse").hidden) return;
@@ -961,7 +972,7 @@ function renderBrowse(){
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
   $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
   $("#srcHint").textContent = B.src === "wago" ? "Addons are installed through CurseForge when they're there too; Wago keeps them updated when it has a newer release." : "";
-  if (B.src === "wago"){ renderWago($("#bres")); $("#bmeta").textContent = B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""; $("#bmore").hidden = true; return; }
+  if (B.src === "wago"){ renderWago($("#bres")); setMeta(B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
   if (S && (!S.config.has_key || !S.config.addons_dir_ok)){
@@ -989,12 +1000,13 @@ function renderBrowse(){
           h("div",{class:"t"}, r.name),
           h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
           h("div",{class:"sum"}, r.summary),
-          h("div",{class:"meta"}, h("span",{}, "⬇ "+fmtNum(r.downloads)), r.updated ? h("span",{}, fmtDate(r.updated)) : null, via, h("span",{class:"sp"}), btn)));
+          h("div",{class:"meta"}, h("span",{}, "⬇ "+fmtNum(r.downloads)), r.updated ? h("span",{}, fmtDate(r.updated)) : null, via, noForever(r), h("span",{class:"sp"}), btn)));
       card.addEventListener("click", e=>{ if (!e.target.closest("button,a")) openDetail(r.id); });
       return card;
     })));
   }
-  $("#bmeta").textContent = B.loaded && !B.error ? (B.total >= 10000 ? "10,000+ addons" : `${B.total.toLocaleString()} addon${B.total===1?"":"s"}`) + " with a WoW Forever version" + (B.q ? ` matching “${B.q}”` : "") : "";
+  setMeta(B.loaded && !B.error ? (B.all ? (B.total >= 10000 ? "10,000+ addons" : `${B.total.toLocaleString()} addon${B.total===1?"":"s"}`) + " on CurseForge, all game versions"
+                                         : "WoW Forever addons") + (B.q ? ` matching “${B.q}”` : "") : "");
   $("#bmore").hidden = !(B.next !== null && !B.error);
   $("#bMoreBtn").disabled = B.loading; $("#bMoreBtn").textContent = B.loading ? "Loading…" : "Show more";
 }

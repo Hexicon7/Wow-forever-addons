@@ -117,6 +117,7 @@ def seed():
 
 
 GH = {}      # repo -> list of releases (newest first)
+LEAKY_SEARCH = False   # True: behave like a search that ignores the game-version filter
 RAW = {}     # "owner/repo/main/path" -> bytes (raw.githubusercontent.com)
 GH_ASSETS = {}  # asset id -> bytes
 _gh_id = [500]
@@ -258,7 +259,7 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(200, {"data": [m for m in MODS.values() if m["slug"] == slug], "pagination": {}})
             res = list(MODS.values())
             t = q.get("gameVersionTypeId", [None])[0]
-            if t:
+            if t and not LEAKY_SEARCH:
                 res = [m for m in res if any(x["gameVersionTypeId"] == int(t) for x in m["latestFilesIndexes"])]
             f = q.get("searchFilter", [""])[0].lower()
             if f:
@@ -329,7 +330,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/wago/api/external/addons/_search":
             qq = (q.get("query") or [""])[0].lower()
             return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url")}
-                                                 for a in WAGO.values() if qq in a["name"].lower() and rr_of(a)]})
+                                                 for a in WAGO.values() if qq in a["name"].lower() and (rr_of(a) or LEAKY_SEARCH)]})
         if p == "/wago/api/external/addons/_recents" and method == "POST":
             return self.send_json(200, {"addons": {i: {"name": WAGO[i]["name"], "website_url": WAGO[i]["website_url"],
                                                        "recent_releases": rr_of(WAGO[i])} for i in body.get("addons", []) if i in WAGO}})
