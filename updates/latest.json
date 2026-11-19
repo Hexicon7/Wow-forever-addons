@@ -1,7 +1,7 @@
 {
   "version": "3.7.1",
   "file": "WoWForeverAddons-Setup-3.7.1.exe",
-  "sha256": "ad7c6d8e0b3e9a7a0aed1f91e39abd5b4a9d080da1955d73eaf01ae35751bfeb",
+  "sha256": "82097a7c2ee8c89b66f1e6b0978375ea662c3e36879d3a0b0caa79af35ab8ac5",
   "size": 5497856,
   "notes": "Updates now come straight from GitHub. Fixed the AddOns folder name shown in Settings (e.g. \"MerfinPlus\"). Fixed a build-script bug that could write a broken Windows manifest."
 }

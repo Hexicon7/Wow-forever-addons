@@ -102,7 +102,7 @@ DEFAULT_CONFIG = {
     "bg_auto_update": True,       # install the updates it finds (otherwise just show a notification)
 }
 BG_CHECK_CHOICES = (0, 1, 3, 6, 12, 24)
-UPDATE_REPO = "Hexicon7/wow-forever-addons"   # owner/repo on GitHub where new versions of this program are published
+UPDATE_REPO = "Hexicon7/Wow-forever-addons"   # owner/repo on GitHub where new versions of this program are published
 
 
 def version_tuple(v: str) -> tuple:
