@@ -1,0 +1,7 @@
+dist/
+*.syso
+setup/payload/*
+!setup/payload/.keep
+desktop/payload/icon.ico
+__pycache__/
+go.sum
