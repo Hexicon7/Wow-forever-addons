@@ -58,7 +58,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.7.1"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 WAGO_BASE = os.environ.get("WFAM_WAGO_BASE", "https://addons.wago.io").rstrip("/")
@@ -101,7 +101,7 @@ DEFAULT_CONFIG = {
     "bg_auto_update": True,       # install the updates it finds (otherwise just show a notification)
 }
 BG_CHECK_CHOICES = (0, 1, 3, 6, 12, 24)
-UPDATE_REPO = ""   # owner/repo on GitHub where new versions of this program are published
+UPDATE_REPO = "Hexicon7/wow-forever-addons"   # owner/repo on GitHub where new versions of this program are published
 
 
 def version_tuple(v: str) -> tuple:

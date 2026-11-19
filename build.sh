@@ -10,9 +10,8 @@ python3 tools/splice.py --repo .
 python3 app/WoWForeverAddons.pyw --write-icon setup/payload/icon.ico
 cp setup/payload/icon.ico desktop/payload/icon.ico
 python3 tools/verify_authenticode.py desktop/payload/WebView2Loader.dll >/dev/null
-for d in desktop setup; do
-  sed -E -i "s/(version=\")[0-9.]+(\.0\" processorArchitecture)/\1$V\2/" $d/app.manifest
-done
+sed -E -i "s/(name=\"WoWForeverAddons.App\" version=\")[0-9.]+(\")/\1$V.0\2/" desktop/app.manifest
+sed -E -i "s/(name=\"WoWForeverAddons.Setup\" version=\")[0-9.]+(\")/\1$V.0\2/" setup/app.manifest
 sed -E -i "s/^(FILEVERSION|PRODUCTVERSION) .*/\1 $C,0/; s/(\"(FileVersion|ProductVersion)\", \")[^\"]+/\1$V/" desktop/app.rc setup/setup.rc
 sed -E -i "s/WoWForeverAddons-Setup-[0-9.]+\.exe/WoWForeverAddons-Setup-$V.exe/" setup/setup.rc
 (cd desktop && $WR --target=pe-x86-64 -i app.rc -o rsrc_windows_amd64.syso &&
