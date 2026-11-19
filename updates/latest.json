@@ -1,7 +1,7 @@
 {
-  "version": "3.8.3",
-  "file": "WoWForeverAddons-Setup-3.8.3.exe",
-  "sha256": "fe9dd463eb5c26b14ee6dca27e3b8daefb371ccc16580ce704e81b63e6fbfe7e",
-  "size": 5523456,
-  "notes": "The program never updates itself on its own any more. When a new version is out you get a notification and a choice: Update now or Later. The \"Check for program update\" button stays."
+  "version": "3.9.0",
+  "file": "WoWForeverAddons-Setup-3.9.0.exe",
+  "sha256": "e3b5dd133603fbabd042422b639c36520be849c7da159469e1b5062b6a8dd08a",
+  "size": 5543424,
+  "notes": "New WeakAuras tab: ForeverAuras (WeakAuras for WoW Forever) from wago.io, with categories and sorting. \"Add to game\" puts an aura in ForeverAuras' own \"Ready to install\" list, or copy the import string. New versions are now also on the GitHub Releases page."
 }

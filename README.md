@@ -3,8 +3,15 @@
 A desktop program for Windows that installs and updates World of Warcraft: Forever addons from
 CurseForge (and Wago / GitHub), without the CurseForge app.
 
-**Download:** get `WoWForeverAddons-Setup-<version>.exe` from [Releases](../../releases) and run it.
-No administrator rights needed. The program updates itself when a new release is published here.
+**Download:** get `WoWForeverAddons-Setup-<version>.exe` from [Releases](../../releases/latest) and run it.
+No administrator rights needed. When a new version is published here, the program tells you and you choose
+when to update (it never updates itself without asking).
+
+Also: WeakAuras for WoW Forever (ForeverAuras) from wago.io — pick them in the program and they show up
+in ForeverAuras' "Ready to install" list in game.
+
+Each new version is put in `updates/` (`tools/publish_update.py`) and published as a release automatically
+by `.github/workflows/release.yml`.
 
 ## What's in this repository
 

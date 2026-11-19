@@ -118,6 +118,7 @@ def seed():
 
 GH = {}      # repo -> list of releases (newest first)
 LEAKY_SEARCH = False
+AURAS = {}   # wago.io WeakAuras: id -> dict
 WAGO_NO_POPULAR = False   # True: behave like a search that ignores the game-version filter
 RAW = {}     # "owner/repo/main/path" -> bytes (raw.githubusercontent.com)
 GH_ASSETS = {}  # asset id -> bytes
@@ -151,6 +152,12 @@ WAGO = {}        # id -> addon
 WAGO_FILES = {}  # n -> bytes
 _wago_n = [0]
 WBASE = None
+
+
+def aura(aid, slug, name, game="forever", categories=(), installs=0, stars=0, version=1, semver="1.0.0", encoded=None, note="", user="AuraMaker", ts=1762000000):
+    AURAS[aid] = {"id": aid, "slug": slug, "name": name, "game": game, "categories": list(categories), "installs": installs,
+                  "stars": stars, "version": version, "semver": semver, "encoded": encoded or ("!WA:2!" + aid + "Zz"),
+                  "note": note, "user": user, "timestamp": ts, "desc": f"{name} description"}
 
 
 def wago_addon(wid, slug, name, categories=(), downloads=0):
@@ -232,6 +239,45 @@ class H(BaseHTTPRequestHandler):
             if repo not in GH:
                 return self.send_json(404, {"message": "Not Found"})
             return self.send_json(200, GH[repo])
+        if p.startswith("/wagodata/"):
+            if self.headers.get("Authorization") or self.headers.get("api-key") or self.headers.get("x-api-key"):
+                return self.send_json(400, {"error": "a key was sent to wago.io"})
+            qq = {k: v[0] for k, v in q.items()}
+            if p == "/wagodata/search/es":
+                if qq.get("expansion") != "forever" or qq.get("type") != "weakaura":
+                    return self.send_json(400, {"error": "expected expansion=forever&type=weakaura"})
+                text = qq.get("q", "")
+                cat = None
+                m_ = __import__("re").search(r"category:(\S+)", text)
+                if m_:
+                    cat = m_.group(1); text = text.replace(m_.group(0), "").strip()
+                hits = [a for a in AURAS.values() if a["game"] == "forever" and (not cat or cat in a["categories"])
+                        and text.lower() in a["name"].lower()]
+                key = {"installs": "installs", "date": "timestamp", "stars": "stars"}.get(qq.get("sort"), "installs")
+                hits.sort(key=lambda a: -a[key])
+                page = int(qq.get("page", "0"))
+                out = [{"id": a["id"], "slug": a["slug"], "name": a["name"], "description": a["desc"], "descriptionSanitized": a["desc"],
+                        "categories": a["categories"], "installs": a["installs"], "stars": a["stars"], "userName": a["user"],
+                        "versionString": a["semver"], "thumbnail": None, "timestamp": a["timestamp"], "hidden": False}
+                       for a in hits[page * 20:(page + 1) * 20]]
+                return self.send_json(200, {"hits": out, "total": len(hits), "index": "x", "query": text})
+            if p == "/wagodata/lookup/wago":
+                a = AURAS.get(qq.get("id")) or next((x for x in AURAS.values() if x["slug"] == qq.get("id")), None)
+                if not a:
+                    return self.send_json(404, {"error": "page_not_found"})
+                return self.send_json(200, {"_id": a["id"], "name": a["name"], "slug": a["slug"], "game": a["game"],
+                                            "type": "FOREVERAURAS" if a["game"] == "forever" else "WEAKAURA",
+                                            "user": {"name": a["user"]},
+                                            "versions": {"total": 1, "versions": [{"version": a["version"], "versionString": a["semver"],
+                                                                                   "date": "2026-11-01T00:00:00Z", "changelog": {"text": a["note"], "format": "markdown"}}]}})
+            if p == "/wagodata/api/raw/encoded":
+                a = AURAS.get(qq.get("id")) or next((x for x in AURAS.values() if x["slug"] == qq.get("id")), None)
+                if not a:
+                    return self.send_json(404, {"error": "page_not_found"})
+                b = a["encoded"].encode()
+                self.send_response(200); self.send_header("Content-Type", "text/plain"); self.send_header("Content-Length", str(len(b))); self.end_headers()
+                return self.wfile.write(b)
+            return self.send_json(404, {})
         if p.startswith("/raw/"):
             data = RAW.get(p[5:])
             if data is None:

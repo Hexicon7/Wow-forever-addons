@@ -59,9 +59,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.8.3"
+APP_VERSION = "3.9.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
+WAGO_DATA = os.environ.get("WFAM_WAGO_DATA", "https://data.wago.io").rstrip("/")   # wago.io (WeakAuras)
+COMPANION_FOLDER = "ForeverAurasCompanion"     # ForeverAuras picks up auras waiting to be imported from here
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
 WAGO_BASE = os.environ.get("WFAM_WAGO_BASE", "https://addons.wago.io").rstrip("/")
 FOREVER_FLAVORS = {"forever", "camelot"}
@@ -960,6 +962,75 @@ class GitHub:
         if digest.startswith("sha256:") and digest[7:].lower() != h256.hexdigest():
             raise UserError("the GitHub download was corrupted (checksum mismatch)")
         return h1.hexdigest()
+
+
+# Wago's WeakAuras categories that exist for ForeverAuras (id -> name), from wago.io's own category list.
+AURA_CATEGORIES = [
+    ("Classes", [("cl11", "Druid"), ("cl3", "Hunter"), ("cl8", "Mage"), ("cl2", "Paladin"), ("cl5", "Priest"),
+                 ("cl4", "Rogue"), ("cl7", "Shaman"), ("cl9", "Warlock"), ("cl1", "Warrior")]),
+    ("Roles", [("role1", "Damage Dealing"), ("role2", "Healing"), ("role3", "Tanking"), ("role4", "Raid Leading")]),
+    ("General", [("gen0", "General"), ("gen2", "Questing"), ("gen6", "Non-Combat"), ("gen10", "Reputation")]),
+    ("Professions", [("prof1", "Gathering"), ("prof5", "Crafting"), ("prof14", "Secondary")]),
+]
+AURA_CAT_NAMES = {cid: name for _g, items in AURA_CATEGORIES for cid, name in items}
+AURA_SORTS = ("installs", "date", "stars", "views", "bestmatchv3")
+
+
+class WagoAuras:
+    """wago.io's public WeakAuras API, limited to ForeverAuras (WoW Forever's WeakAuras).
+    No key is needed or sent."""
+
+    def _get(self, path: str, params: dict, raw: bool = False):
+        url = f"{WAGO_DATA}{path}?{urllib.parse.urlencode(params)}"
+        try:
+            code, _h, body = http_call("GET", url, {"Accept": "text/plain" if raw else "application/json",
+                                                    "User-Agent": USER_AGENT}, timeout=30, max_bytes=8 << 20)
+        except NetError as e:
+            raise UserError(f"couldn't reach wago.io ({e.reason})")
+        if code == 404:
+            raise UserError("that aura isn't on wago.io any more")
+        if code in (401, 403):
+            raise UserError("that aura is private on wago.io")
+        if code != 200:
+            raise UserError(f"wago.io returned HTTP {code}")
+        if raw:
+            return body.decode("utf-8", "replace").strip()
+        try:
+            return json.loads(body.decode("utf-8"))
+        except ValueError:
+            raise UserError("wago.io sent something that isn't JSON")
+
+    def search(self, q: str, category: str, sort: str, page: int) -> dict:
+        text = (q or "").strip()[:100]
+        if category in AURA_CAT_NAMES:
+            text = f"{text} category:{category}".strip()
+        return self._get("/search/es", {"q": text, "expansion": "forever", "type": "weakaura",
+                                        "page": max(0, min(int(page), 50)),
+                                        "sort": sort if sort in AURA_SORTS else "installs"})
+
+    def details(self, aura_id: str) -> dict:
+        return self._get("/lookup/wago", {"id": aura_id})
+
+    def encoded(self, aura_id: str, version: str | None = None) -> str:
+        params = {"id": aura_id}
+        if version:
+            params["version"] = version
+        return self._get("/api/raw/encoded", params, raw=True)
+
+
+def lua_str(s: str) -> str:
+    out = []
+    for ch in str(s):
+        o = ord(ch)
+        if ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif ch == "\n":
+            out.append("\\n")
+        elif o < 32 or o == 127:
+            out.append("\\%03d" % o)
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 class Wago:
@@ -2583,7 +2654,7 @@ class Manager:
         d = self.store.config.get("addons_dir")
         if not d or not Path(d).is_dir():
             return []
-        owned = {f for r in self.store.addons.values() for f in (r.get("folders") or [])}
+        owned = {f for r in self.store.addons.values() for f in (r.get("folders") or [])} | {COMPANION_FOLDER}
         return sorted(p for p in Path(d).iterdir() if p.is_dir() and p.name not in owned
                       and not p.name.startswith(".") and not p.name.startswith("Blizzard_"))
 
@@ -3239,6 +3310,170 @@ class Manager:
             rec["wago_latest"] = rel
         self._install_from_wago({"id": key, "name": rec.get("name") or key}, rec, rel, rec.get("pinned", False))
 
+    # -- ForeverAuras (WeakAuras for WoW Forever) from wago.io ------------------ #
+    def aura_search(self, q: str, category: str, sort: str, page: int) -> dict:
+        r = WagoAuras().search(q, category, sort, page)
+        pending = self.store.state.get("auras") or {}
+        pend_ids = {v.get("id") for v in pending.values()}
+        hits = []
+        for h in r.get("hits") or []:
+            if not isinstance(h, dict) or not h.get("id") or h.get("hidden"):
+                continue
+            hits.append({"id": str(h["id"]), "slug": h.get("slug") or h["id"], "name": h.get("name") or h["id"],
+                         "author": h.get("userName") or "", "version": h.get("versionString") or "",
+                         "summary": re.sub(r"\s+", " ", (h.get("descriptionSanitized") or h.get("description") or ""))[:300],
+                         "thumb": h.get("thumbnailStatic") or h.get("thumbnail") or "",
+                         "installs": int(h.get("installs") or 0), "stars": int(h.get("stars") or 0),
+                         "date": h.get("timestamp") or 0,
+                         "categories": [AURA_CAT_NAMES[c] for c in h.get("categories") or [] if c in AURA_CAT_NAMES][:3],
+                         "url": f"https://wago.io/{h.get('slug') or h['id']}",
+                         "pending": str(h["id"]) in pend_ids})
+        total = int(r.get("total") or 0)
+        page = max(0, int(page or 0))
+        return {"results": hits, "total": total, "next": page + 1 if hits and (page + 1) * 20 < total else None}
+
+    def _auras_dir(self) -> Path:
+        p = self.store.dir / "auras"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def foreverauras_installed(self) -> bool:
+        d = self.store.config.get("addons_dir")
+        return bool(d) and (Path(d) / "ForeverAuras").is_dir()
+
+    def op_aura_add(self, aura_id: str):
+        """Put an aura in ForeverAuras' "ready to install" list (the in-game Companion list)."""
+        aura_id = str(aura_id or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,64}", aura_id):
+            raise UserError("That doesn't look like a wago.io aura.")
+        self.addons_dir()
+        wa = WagoAuras()
+        det = wa.details(aura_id)
+        game = str(det.get("game") or "").lower()
+        if game != "forever" and "FOREVER" not in str(det.get("type") or "").upper():
+            raise UserError(f"{det.get('name') or aura_id} isn't made for WoW Forever (ForeverAuras).")
+        vers = ((det.get("versions") or {}).get("versions") or [{}])
+        latest = max(vers, key=lambda v: int(v.get("version") or 0)) if vers else {}
+        encoded = wa.encoded(aura_id, latest.get("versionString"))
+        if not encoded.startswith("!"):
+            raise UserError("wago.io didn't send an import string for that aura.")
+        slug = str(det.get("slug") or aura_id)
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", slug):
+            slug = aura_id
+        if slug in self._imported_aura_slugs() or aura_id in self._imported_aura_slugs():
+            self.log(f"{det.get('name') or slug} is already in ForeverAuras in game.", "ok")
+            return
+        (self._auras_dir() / f"{aura_id}.txt").write_text(encoded, "utf-8")
+        note = (latest.get("changelog") or {}).get("text") if isinstance(latest.get("changelog"), dict) else ""
+        with self.store.lock:
+            self.store.state.setdefault("auras", {})[slug] = {
+                "id": aura_id, "name": str(det.get("name") or slug)[:120],
+                "author": str((det.get("user") or {}).get("name") or "")[:60],
+                "version": int(latest.get("version") or 1), "semver": str(latest.get("versionString") or ""),
+                "note": str(note or "")[:300], "added_at": now_iso()}
+            self.store.save_state()
+        self.write_companion()
+        hint = "" if self.foreverauras_installed() else " ForeverAuras itself isn't in your AddOns folder yet — install it first."
+        self.log(f"{det.get('name') or slug} is ready in game: log in (or type /reload) and open /fa — "
+                 f"it's at the top under “Ready to install”.{hint}", "ok")
+
+    def aura_remove(self, slug: str):
+        with self.store.lock:
+            gone = (self.store.state.get("auras") or {}).pop(str(slug), None)
+            self.store.save_state()
+        if gone:
+            try:
+                (self._auras_dir() / f"{gone['id']}.txt").unlink()
+            except OSError:
+                pass
+        self.write_companion()
+
+    def aura_code(self, ident: str) -> str:
+        """The import string, to paste in game by hand (/fa → Import)."""
+        ident = str(ident or "")
+        a = (self.store.state.get("auras") or {}).get(ident)
+        if a:
+            try:
+                return (self._auras_dir() / f"{a['id']}.txt").read_text("utf-8")
+            except OSError:
+                ident = a["id"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{2,80}", ident):
+            raise UserError("That doesn't look like a wago.io aura.")
+        wa = WagoAuras()
+        det = wa.details(ident)
+        if str(det.get("game") or "").lower() != "forever" and "FOREVER" not in str(det.get("type") or "").upper():
+            raise UserError(f"{det.get('name') or ident} isn't made for WoW Forever (ForeverAuras).")
+        code = wa.encoded(ident)
+        if not code.startswith("!"):
+            raise UserError("wago.io didn't send an import string for that aura.")
+        return code
+
+    def _imported_aura_slugs(self) -> set[str]:
+        """Slugs of wago.io auras already imported in ForeverAuras on any account (from its saved data)."""
+        d = self.store.config.get("addons_dir")
+        found: set[str] = set()
+        if not d:
+            return found
+        wtf = Path(d).parent.parent / "WTF" / "Account"
+        try:
+            files = list(wtf.glob("*/SavedVariables/ForeverAurasSaved.lua"))
+        except OSError:
+            return found
+        for f in files:
+            try:
+                text = f.read_text("utf-8", errors="replace")
+            except OSError:
+                continue
+            found |= set(re.findall(r'wago\.io/([A-Za-z0-9_.-]+)', text))
+        return found
+
+    def write_companion(self):
+        """(Re)write the small ForeverAurasCompanion addon that hands ForeverAuras the auras you picked.
+        Auras already imported in game are dropped from it."""
+        d = self.store.config.get("addons_dir")
+        if not d or not Path(d).is_dir():
+            return
+        auras = self.store.state.get("auras") or {}
+        folder = Path(d) / COMPANION_FOLDER
+        if not auras and not folder.exists():
+            return
+        done = self._imported_aura_slugs() & set(auras) if auras else set()
+        if done:
+            with self.store.lock:
+                for slug in done:
+                    a = auras.pop(slug, None)
+                    if a:
+                        try:
+                            (self._auras_dir() / f"{a['id']}.txt").unlink()
+                        except OSError:
+                            pass
+                self.store.save_state()
+        if not auras:
+            if folder.is_dir():
+                rmtree(folder)
+            return
+        lines = ["-- Written by WoW Forever Addons. Auras you picked on wago.io, waiting to be imported.",
+                 "ForeverAurasCompanion = {", "  WeakAuras = {", "    slugs = {},", "    stash = {"]
+        for slug, a in sorted(auras.items()):
+            try:
+                enc = (self._auras_dir() / f"{a['id']}.txt").read_text("utf-8")
+            except OSError:
+                continue
+            lines.append(f"      [{lua_str(slug)}] = {{ name = {lua_str(a.get('name') or slug)}, "
+                         f"author = {lua_str(a.get('author') or '')}, encoded = {lua_str(enc)}, "
+                         f"wagoVersion = {lua_str(str(a.get('version') or 1))}, wagoSemver = {lua_str(a.get('semver') or '')}, "
+                         f"versionNote = {lua_str(a.get('note') or '')} }},")
+        lines += ["    },", "  },", "}", ""]
+        iface = str(self.store.config.get("interface") or DEFAULT_INTERFACE)
+        toc = (f"## Interface: {iface}\n## Title: ForeverAuras Companion\n"
+               f"## Notes: Auras picked in WoW Forever Addons, ready to import in ForeverAuras.\n"
+               f"## Author: WoW Forever Addons\n## Version: 1\n## Dependencies: ForeverAuras\n\ndata.lua\n")
+        folder.mkdir(exist_ok=True)
+        for name, content in (("ForeverAurasCompanion.toc", toc), ("data.lua", "\n".join(lines))):
+            tmp = folder / (name + ".tmp")
+            tmp.write_text(content, "utf-8")
+            os.replace(tmp, folder / name)
+
     # -- GitHub --------------------------------------------------------------- #
     def _try_github(self, mod: dict, rec: dict, pinned: bool) -> bool:
         """Install a CurseForge-site-only addon from its GitHub releases. True if it worked."""
@@ -3634,6 +3869,10 @@ class Manager:
 
     def op_check(self):
         self.last_check_at = time.time()
+        try:
+            self.write_companion()       # drop auras you've imported in game since
+        except OSError:
+            pass
         cf = self.client()
         type_id = self.ensure_type(cf)
         channel = self.store.config.get("channel", "release")
@@ -4164,7 +4403,7 @@ class Manager:
 
         unmanaged, hidden = [], []
         if dir_ok:
-            owned = {f for r in recs.values() for f in (r.get("folders") or [])}
+            owned = {f for r in recs.values() for f in (r.get("folders") or [])} | {COMPANION_FOLDER}
             groups: dict[str, dict] = {}
             try:
                 dirs = sorted(p for p in addons_dir.iterdir() if p.is_dir())
@@ -4245,6 +4484,11 @@ class Manager:
             },
             "managed": managed,
             "unmanaged": unmanaged,
+            "auras_pending": [{"slug": k, "name": v.get("name"), "author": v.get("author"), "version": v.get("semver"),
+                               "id": v.get("id"), "added_at": v.get("added_at")}
+                              for k, v in sorted((self.store.state.get("auras") or {}).items(),
+                                                 key=lambda kv: kv[1].get("added_at") or "")],
+            "foreverauras": bool(dir_ok and (addons_dir / "ForeverAuras").is_dir()),
             "self_update": {"version": self.self_update["version"], "notes": self.self_update["notes"],
                             "page": self.self_update["page"]} if self.self_update else None,
             "last_batch": self._batch_view(recs),
@@ -4527,6 +4771,19 @@ class App:
             return {"ok": True}
         if path == "/api/share_code":
             return {"code": m.share_code(), "count": len(m.store.addons)}
+        if path == "/api/aura_search":
+            return m.aura_search(str(body.get("q") or ""), str(body.get("category") or ""),
+                                 str(body.get("sort") or "installs"), int(body.get("page") or 0))
+        if path == "/api/aura_add":
+            m.run_job("Getting the aura from wago.io", m.op_aura_add, str(body.get("id") or ""))
+            return {"ok": True}
+        if path == "/api/aura_remove":
+            m.aura_remove(str(body.get("slug") or ""))
+            return {"ok": True}
+        if path == "/api/aura_code":
+            return {"code": m.aura_code(str(body.get("slug") or body.get("id") or ""))}
+        if path == "/api/aura_categories":
+            return {"groups": [{"name": g, "items": [{"id": i, "name": n} for i, n in items]} for g, items in AURA_CATEGORIES]}
         if path == "/api/add_wago":
             m.run_job("Installing from Wago", m.op_add_wago, str(body.get("id") or ""))
             return {"ok": True}
@@ -5231,11 +5488,13 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       </div>
 
       <div id="vBrowse" class="view" hidden>
-        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago">Wago</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
           <select id="wcat" hidden><option value="">All categories</option></select>
+          <select id="acat" hidden><option value="">All categories</option></select>
+          <select id="asort" hidden><option value="installs">Most installed</option><option value="date">Recently updated</option><option value="stars">Most stars</option><option value="views">Most viewed</option><option value="bestmatchv3">Best match</option></select>
           <select id="wsort" hidden><option value="pop">Most popular</option><option value="dl">Most downloaded</option><option value="new">Recently updated</option><option value="name">Name</option></select>
           <select id="bsort">
             <option value="2">Most popular</option>
@@ -5808,6 +6067,7 @@ const queue = [];
 let sending = null;
 async function bSearch(append){
   if (B.src === "wago") return wSearch();
+  if (B.src === "auras") return aSearch(append);
   if (B.loading && append) return;
   const my = ++B.seq;
   B.loading = true; B.error = "";
@@ -5854,6 +6114,77 @@ async function wSearch(){
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
 }
+// ---------- WeakAuras (ForeverAuras) from wago.io ----------
+const A = {cat:"", sort:"installs", results:[], next:null, total:0, page:0, loading:false, loaded:false, error:"", seq:0, catsLoaded:false};
+async function aSearch(append){
+  if (A.loading && append) return;
+  const my = ++A.seq;
+  A.loading = true; A.error = "";
+  if (!append){ A.results = []; A.next = null; A.page = 0; }
+  if (!A.catsLoaded) loadAuraCats();
+  renderBrowse();
+  try{
+    const page = append ? A.next : 0;
+    const r = await post("/api/aura_search",{q:B.q, category:A.cat, sort:A.sort, page});
+    if (my !== A.seq) return;
+    A.results = append ? A.results.concat(r.results) : r.results; A.next = r.next; A.total = r.total; A.loaded = true;
+  }catch(e){ if (my === A.seq) A.error = e.message; }
+  if (my === A.seq){ A.loading = false; renderBrowse(); }
+}
+async function loadAuraCats(){
+  try{
+    const r = await post("/api/aura_categories",{});
+    const sel = $("#acat"); sel.replaceChildren(h("option",{value:""},"All categories"));
+    for (const g of r.groups) sel.append(h("optgroup",{label:g.name}, ...g.items.map(c=>h("option",{value:c.id}, c.name))));
+    sel.value = A.cat; A.catsLoaded = true;
+  }catch(e){}
+}
+async function copyAura(ident, btn){
+  const old = btn.textContent; btn.disabled = true; btn.textContent = "Copying…";
+  try{
+    const r = await post("/api/aura_code",{id:ident});
+    try{ await navigator.clipboard.writeText(r.code); }catch(e){ const ta=h("textarea",{style:"position:fixed;opacity:0"}); ta.value=r.code; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+    toast("Import string copied — in game type /fa, click Import and paste.");
+    btn.textContent = "Copied ✓"; setTimeout(()=>{ btn.textContent = old; btn.disabled = false; }, 2000); return;
+  }catch(e){ toast(e.message); }
+  btn.textContent = old; btn.disabled = false;
+}
+function renderAuras(){
+  const box = $("#bres"), pend = (S && S.auras_pending) || [], busy = !!(S && S.job.running);
+  const parts = [];
+  if (S && S.config.addons_dir_ok && !S.foreverauras)
+    parts.push(h("div",{class:"card",style:"padding:14px 16px;margin-bottom:12px"}, h("b",{},"ForeverAuras isn't installed. "),
+      "Auras need the ForeverAuras addon (WoW Forever's WeakAuras). ", h("a",{href:"https://github.com/neroxrw/foreverauras/releases"},"Get ForeverAuras ↗")));
+  if (pend.length)
+    parts.push(h("div",{class:"card",style:"padding:14px 16px;margin-bottom:12px"},
+      h("b",{}, pend.length + (pend.length===1 ? " aura is" : " auras are") + " waiting in game"),
+      h("div",{class:"dim",style:"font-size:12.5px;margin:4px 0 8px"},"Log in (or type /reload), then open /fa — they're at the top under “Ready to install”. They leave this list once imported."),
+      ...pend.map(p=>h("div",{class:"row2",style:"display:flex;gap:10px;align-items:center;padding:4px 0"},
+        h("span",{style:"flex:1"}, p.name, h("span",{class:"dim"}, (p.author ? " · " + p.author : "") + (p.version ? " · " + p.version : ""))),
+        h("button",{class:"btn small ghost",onclick:e=>copyAura(p.slug, e.currentTarget)},"Copy string"),
+        h("button",{class:"btn small ghost danger",onclick:()=>act("/api/aura_remove",{slug:p.slug})},"Remove")))));
+  if (A.error) parts.push(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"wago.io search failed"), h("br"), A.error)));
+  else if (!A.results.length) parts.push(h("div",{class:"card"}, h("div",{class:"empty"}, A.loading ? "Loading ForeverAuras from wago.io…" : (A.loaded ? "No ForeverAuras match that." : ""))));
+  else parts.push(h("div",{class:"grid"}, ...A.results.map(r=>{
+    const pending = r.pending || pend.some(p=>p.id===r.id);
+    const btn = pending ? h("span",{class:"tag ok",title:"Waiting in game: open /fa"},"Ready in game ✓")
+      : h("button",{class:"btn small primary",disabled:busy,title:"Puts it in ForeverAuras' “Ready to install” list — import it in game with one click",onclick:e=>{ e.stopPropagation(); act("/api/aura_add",{id:r.id}); }},"Add to game");
+    return h("div",{class:"res",title:r.summary},
+      logoEl(r.thumb, r.name),
+      h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
+        h("div",{class:"sum"}, r.categories.length ? r.categories.join(" · ") + (r.summary ? " — " : "") : "", r.summary),
+        h("div",{class:"meta"}, h("span",{}, "⬇ " + fmtNum(r.installs)), r.stars ? h("span",{}, "★ " + fmtNum(r.stars)) : null,
+          r.date ? h("span",{}, fmtDate(new Date(r.date * (r.date < 1e12 ? 1000 : 1)).toISOString())) : null,
+          h("a",{href:r.url,onclick:e=>e.stopPropagation()},"wago.io ↗"), h("span",{class:"sp"}),
+          h("button",{class:"btn small ghost",title:"Copy the import string to paste in game yourself (/fa → Import)",onclick:e=>{ e.stopPropagation(); copyAura(r.id, e.currentTarget); }},"Copy"), btn)));
+  })));
+  box.replaceChildren(...parts);
+  $("#srcHint").textContent = "ForeverAuras from wago.io. “Add to game” puts them in ForeverAuras' own install list — no copy-paste needed.";
+  setMetaPlain(A.loaded && !A.error ? (A.total >= 10000 ? "10,000+" : A.total.toLocaleString()) + " ForeverAuras" + (B.q ? ` matching “${B.q}”` : "") + (A.cat ? " in " + $("#acat").selectedOptions[0].textContent : "") : "");
+  $("#bmore").hidden = !(A.next !== null && !A.error);
+  $("#bMoreBtn").disabled = A.loading; $("#bMoreBtn").textContent = A.loading ? "Loading…" : "Show more";
+}
+function setMetaPlain(t){ $("#bmeta").replaceChildren(t); }
 const W = {cat:"", sort:"pop"};
 function wagoCats(){
   const sel = $("#wcat"), names = [...new Set(B.results.flatMap(r=>r.categories||[]))].sort((a,b)=>a.localeCompare(b));
@@ -5895,11 +6226,14 @@ function setMeta(text){
 function renderBrowse(){
   if ($("#vBrowse").hidden) return;
   const wagoOk = !!(S && S.config.has_wago_key && S.config.use_wago);
-  $("#srcBar").hidden = !wagoOk;
+  $("#srcBar").hidden = false; $("#srcWago").hidden = !wagoOk;
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
-  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : "Browse CurseForge";
-  $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
+  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : "Browse CurseForge";
+  $("#bcat").hidden = $("#bsort").hidden = B.src !== "cf";
+  $("#acat").hidden = $("#asort").hidden = B.src !== "auras";
+  $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, auction…";
+  if (B.src === "auras"){ $("#wsort").hidden = $("#wcat").hidden = true; renderAuras(); return; }
   $("#wsort").hidden = B.src !== "wago";
   if (B.src === "wago") wagoCats(); else $("#wcat").hidden = true;
   $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";
@@ -6202,6 +6536,8 @@ $("#bq").addEventListener("keydown", e=>{ if (e.key==="Enter"){ clearTimeout(bTi
 $("#bsort").onchange = ()=>{ B.sort=$("#bsort").value; bSearch(false); };
 $("#bcat").onchange = ()=>{ B.cat=$("#bcat").value; bSearch(false); };
 $("#bMoreBtn").onclick = ()=>bSearch(true);
+$("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; bSearch(false); });
+$("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; bSearch(false); });
 document.querySelectorAll(".srcsw button").forEach(b=>b.onclick=()=>{ if (B.src===b.dataset.src) return; B.src=b.dataset.src; B.results=[]; B.loaded=false; B.q=$("#bq").value.trim(); bSearch(false); $("#bq").focus(); });
 $("#bBackupNow").onclick = ()=>act("/api/backup_now");
 $("#chReload").onclick = loadChars;
