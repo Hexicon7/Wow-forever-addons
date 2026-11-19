@@ -1,7 +1,7 @@
 {
-  "version": "3.7.2",
-  "file": "WoWForeverAddons-Setup-3.7.2.exe",
-  "sha256": "b311a3152dded9531794800a1d5aa9b8843bd031be3e90b8a23f804d88154990",
-  "size": 5500416,
-  "notes": "Browse now only shows addons that have a WoW Forever version (CurseForge and Wago). Use \"Show them\" to see the rest."
+  "version": "3.8.0",
+  "file": "WoWForeverAddons-Setup-3.8.0.exe",
+  "sha256": "6e190fe1a2c8978aaea0c4b350eddeaee9029217194088d5f73fe07bf054ba3c",
+  "size": 5516800,
+  "notes": "Install addons that are only on Wago. When an addon is on both CurseForge and Wago, the higher version number wins. Share your addon list as a code. Out-of-date warnings follow WoW Forever patches automatically."
 }

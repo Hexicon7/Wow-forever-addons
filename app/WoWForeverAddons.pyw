@@ -53,12 +53,13 @@ import urllib.parse
 import urllib.request
 import webbrowser
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.7.2"
+APP_VERSION = "3.8.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -84,6 +85,7 @@ DEFAULT_CONFIG = {
     "version_type_name": "",
     "channel": "release",
     "interface": DEFAULT_INTERFACE,
+    "interface_auto": True,        # follow the number the game itself reports (WTF/Config.wtf)
     "auto_dependencies": True,
     "auto_manual": True,          # open CurseForge's download page and install the zip when it lands
     "downloads_dir": "",          # empty = the Windows Downloads folder
@@ -161,6 +163,18 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
 KEEP_PREVIOUS_VERSIONS = 2
+WAGO_KEY_PREFIX = "wago-"      # addons that are only on Wago are stored under "wago-<Wago id>"
+
+
+def is_wago_key(key: str) -> bool:
+    return str(key).startswith(WAGO_KEY_PREFIX)
+
+
+def wago_key(wago_id: str) -> str:
+    wid = str(wago_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", wid):
+        raise UserError("That doesn't look like a Wago addon.")
+    return WAGO_KEY_PREFIX + wid
 # Fields that hold data from the CurseForge API: kept in memory only, never written to disk.
 CF_FIELDS = ("name", "slug", "url", "summary", "authors", "logo", "library", "distribution_disabled", "latest_file_id",
              "latest_version", "latest_date", "latest_sha1", "latest_release_type", "latest_checked_at", "awaiting")
@@ -403,6 +417,32 @@ def _read_toc(folder: Path) -> dict:
         "toc": toc.name,
         "loads": loads,
     }
+
+
+_iface_cache: dict[str, tuple] = {}
+
+
+def game_interface(addons_dir: str | Path | None) -> str | None:
+    """The interface number the WoW Forever client itself uses: it writes it to WTF/Config.wtf
+    (SET lastAddonVersion "...") when it starts. None until the game has been started once."""
+    if not addons_dir:
+        return None
+    cfg = Path(addons_dir).parent.parent / "WTF" / "Config.wtf"
+    try:
+        mt = cfg.stat().st_mtime_ns
+    except OSError:
+        return None
+    hit = _iface_cache.get(str(cfg))
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        m = re.search(r'^\s*SET\s+lastAddonVersion\s+"(\d{4,7})"', cfg.read_text("utf-8", errors="replace")[:200000],
+                      re.M | re.I)
+    except OSError:
+        return None
+    val = m.group(1) if m else None
+    _iface_cache[str(cfg)] = (mt, val)
+    return val
 
 
 def compat_of(interfaces: list[str], wanted: str) -> str:
@@ -1018,6 +1058,19 @@ def _ts(iso: str | None) -> float | None:
 
 def norm_version(v: str | None) -> str:
     return re.sub(r"[^0-9a-z]", "", (v or "").lower()).lstrip("v")
+
+
+_DOTTED_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)+(?![\d.]*\d)")
+
+
+def version_cmp(a: str | None, b: str | None) -> int | None:
+    """Compare two version labels by their dotted numbers ("Questie-v12.6.0" vs "v12.10.1").
+    1: a is newer, -1: b is newer, 0: same numbers, None: no version numbers to compare."""
+    ta = [tuple(int(x) for x in m.split(".")) for m in _DOTTED_RE.findall(a or "")]
+    tb = [tuple(int(x) for x in m.split(".")) for m in _DOTTED_RE.findall(b or "")]
+    if not ta or not tb:
+        return None
+    return (ta > tb) - (ta < tb)
 
 
 def same_name(a: str | None, b: str | None) -> bool:
@@ -1737,6 +1790,10 @@ class Store:
         out = {k: v for k, v in self.state.items() if k not in ("addons", "recognized", "fp_query")}
         addons = {}
         for key, r in self.state["addons"].items():
+            if is_wago_key(key):      # nothing from CurseForge in these
+                d = {k: v for k, v in r.items() if k not in ("latest_checked_at", "awaiting")}
+                addons[key] = d
+                continue
             d = {k: v for k, v in r.items() if k not in CF_FIELDS}
             if (r.get("source") or "curseforge") == "curseforge":
                 for k in CF_INSTALLED_FIELDS:
@@ -2324,7 +2381,9 @@ class Manager:
         q = (q or "").strip()
         if len(q) < 2:
             return [], 0
-        managed = {(r.get("slug") or "").lower() for r in self.store.addons.values()}
+        managed = {(r.get("slug") or "").lower() for r in self.store.addons.values() if self._folders_present(r)}
+        managed_ids = {str((r.get("wago") or {}).get("id")) for r in self.store.addons.values()
+                       if r.get("wago") and self._folders_present(r)}
         hits = [a for a in wg.search(q)[:60] if a.get("id")]
         has_build = None
         try:   # same lookup the update check uses: which of these have a WoW Forever release on Wago
@@ -2347,7 +2406,7 @@ class Manager:
                         "authors": [x if isinstance(x, str) else (x.get("name") or "") for x in a.get("authors") or []],
                         "downloads": int(a.get("download_count") or a.get("downloads") or 0),
                         "url": a.get("website_url") or f"https://addons.wago.io/addons/{slug}",
-                        "installed": slug.lower() in managed, "forever": fv})
+                        "installed": slug.lower() in managed or str(a.get("id")) in managed_ids, "forever": fv})
         return out, hidden
 
     def details(self, mod_id: int) -> dict:
@@ -2466,6 +2525,11 @@ class Manager:
             body = GitHub().release(rec["github"], gl["release_id"]).get("body") or ""
             return {"title": f"{rec['name']} {gl.get('name')}", "text": body.strip() or "(no release notes)",
                     "url": gl.get("url")}
+        if is_wago_key(key):
+            wl = rec.get("wago_latest") or {}
+            return {"title": f"{rec['name']} {wl.get('label') or rec.get('installed_version') or ''}",
+                    "text": "Wago doesn't share release notes with other apps — they're on the addon's Wago page.",
+                    "url": (rec.get("wago") or {}).get("url") or rec.get("url")}
         fid = rec.get("latest_file_id") or rec.get("installed_file_id")
         if not fid:
             raise UserError("Check for updates first.")
@@ -2772,20 +2836,73 @@ class Manager:
     def export_list(self) -> dict:
         items = []
         for k, r in sorted(self.store.addons.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
+            if is_wago_key(k):
+                items.append({"wago": (r.get("wago") or {}).get("id"), "name": r.get("name"), "source": "wago",
+                              "version": r.get("installed_version"), "pinned": bool(r.get("pinned")), "url": r.get("url")})
+                continue
             items.append({"id": int(k), "name": r.get("name"), "version": r.get("installed_version"),
                           "file_id": r.get("installed_file_id"), "pinned": bool(r.get("pinned")),
                           "source": r.get("source") or "curseforge", "url": r.get("url")})
         return {"app": APP_NAME, "format": 1, "exported_at": now_iso(), "addons": items}
 
-    def op_import(self, data: bytes):
+    SHARE_PREFIX = "WFA1."
+
+    def share_code(self) -> str:
+        """The whole list as one line of text, to paste in Discord or into the app on another PC."""
+        items = []
+        for k, r in sorted(self.store.addons.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
+            if is_wago_key(k):
+                if (r.get("wago") or {}).get("id"):
+                    items.append("w:" + str(r["wago"]["id"]))
+            else:
+                fid = r.get("installed_file_id") if r.get("pinned") else None
+                items.append([int(k), int(fid)] if fid else int(k))
+        raw = zlib.compress(json.dumps(items, separators=(",", ":")).encode("utf-8"), 9)
+        return self.SHARE_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def _items_from_code(self, text: str) -> list[dict]:
+        body = re.sub(r"\s+", "", text)[len(self.SHARE_PREFIX):]
         try:
-            doc = json.loads(data.decode("utf-8-sig"))
-            items = doc["addons"]
-            assert isinstance(items, list)
+            dec = zlib.decompressobj()
+            raw = dec.decompress(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)), 1 << 20)
+            assert not dec.unconsumed_tail          # refuse anything that unpacks to more than 1 MB
+            data = json.loads(raw.decode("utf-8"))
+            assert isinstance(data, list)
         except Exception:
-            raise UserError("That file isn't an addon list exported by this app.")
-        refs = []
+            raise UserError("That share code is damaged — copy the whole line again.")
+        out = []
+        for it in data[:2000]:
+            if isinstance(it, str) and it.startswith("w:"):
+                out.append({"wago": it[2:], "name": it[2:]})
+            elif isinstance(it, int):
+                out.append({"id": it})
+            elif isinstance(it, list) and it and all(isinstance(x, int) for x in it):
+                out.append({"id": it[0], "file_id": it[1] if len(it) > 1 else None, "pinned": len(it) > 1})
+        return out
+
+    def op_import(self, data: bytes, allow_links: bool = False):
+        text = data.decode("utf-8-sig", "replace").strip()
+        if text.startswith(self.SHARE_PREFIX):
+            items = self._items_from_code(text)
+        else:
+            try:
+                doc = json.loads(text)
+                items = doc["addons"]
+                assert isinstance(items, list)
+            except Exception:
+                if allow_links and text and not text.startswith(("{", "[")):
+                    return self.op_add(text)          # a plain list of links or names
+                raise UserError("That isn't an addon list exported by this app.")
+        refs, wago_ids = [], []
         for it in items:
+            if not isinstance(it, dict):
+                continue
+            if it.get("wago"):
+                wid = str(it["wago"])
+                if not any(str((r.get("wago") or {}).get("id")) == wid and self._folders_present(r)
+                           for r in self.store.addons.values()):
+                    wago_ids.append(wid)
+                continue
             try:
                 mid = int(it["id"])
             except (KeyError, TypeError, ValueError):
@@ -2794,11 +2911,21 @@ class Manager:
                 continue
             fid = it.get("file_id") if it.get("pinned") else None
             refs.append({"kind": "id", "id": mid, "file": int(fid) if fid else None, "raw": it.get("name") or str(mid)})
-        if not refs:
+        if not refs and not wago_ids:
             self.log("Everything in that list is already installed.", "ok")
             return
-        self.log(f"Importing {len(refs)} addon(s)…")
-        self._add_refs(refs)
+        self.log(f"Importing {len(refs) + len(wago_ids)} addon(s)…")
+        if refs:
+            self._add_refs(refs)
+        if wago_ids and not self.wago():
+            self.log(f"{len(wago_ids)} addon(s) in the list are only on Wago — add your Wago key in Settings "
+                     f"and import again to get them.", "warn")
+            return
+        for wid in wago_ids:
+            try:
+                self.op_add_wago(wid)
+            except UserError as e:
+                self.log(f"Wago addon {wid}: {e}", "error")
 
     # -- Wago ----------------------------------------------------------------- #
     def wago(self) -> Wago | None:
@@ -2832,14 +2959,23 @@ class Manager:
             return False
         if rec.get("source") == "wago":
             wi = rec.get("wago_installed") or {}
+            c = version_cmp(wl.get("label"), rec.get("installed_version") or wi.get("label"))
+            if c is not None:
+                return c > 0
             a, b = _ts(wl.get("created_at")), _ts(wi.get("created_at"))
             return bool(a and b and a > b and norm_version(wl.get("label")) != norm_version(wi.get("label")))
+        c = version_cmp(wl.get("label"), rec.get("installed_version"))
+        if c is not None:      # the higher version number wins, whichever site got it first
+            return c > 0
         inst = _ts(rec.get("installed_file_date") or rec.get("local_date"))
         latest = _ts(wl.get("created_at"))
         return bool(inst and latest and latest > inst + 600
                     and norm_version(wl.get("label")) != norm_version(rec.get("installed_version")))
 
     def _cf_newer_by_date(self, rec: dict) -> bool:
+        c = version_cmp(rec.get("latest_version"), rec.get("installed_version"))
+        if c is not None and rec.get("latest_file_id"):
+            return c > 0
         a, b = _ts(rec.get("latest_date")), _ts(rec.get("installed_file_date") or rec.get("local_date"))
         return bool(rec.get("latest_file_id") and a and b and a > b + 600
                     and norm_version(rec.get("latest_version")) != norm_version(rec.get("installed_version")))
@@ -2866,6 +3002,9 @@ class Manager:
         if cf_new and wago_new:
             if rec.get("distribution_disabled"):
                 return "wago"
+            c = version_cmp(rec["wago_latest"].get("label"), rec.get("latest_version"))
+            if c:
+                return "wago" if c > 0 else "curseforge"
             return "wago" if (_ts(rec["wago_latest"]["created_at"]) or 0) > (_ts(rec.get("latest_date")) or 0) + 600 else "curseforge"
         if cf_new:
             return "curseforge"
@@ -2977,8 +3116,88 @@ class Manager:
                         continue
                     r["wago"]["url"] = payload.get("website_url") or r["wago"].get("url")
                     r["wago_latest"] = Wago.pick_release(payload, channel)
+                    if is_wago_key(k):
+                        r["latest_checked_at"] = time.time()
+                        if not r["wago_latest"]:
+                            self.log(f"{r.get('name')}: no WoW Forever release on Wago right now.", "warn")
         except UserError as e:
             self.log(f"Wago: {e}", "warn")
+
+    def op_add_wago(self, wago_id: str):
+        """Install an addon picked on Wago. If CurseForge has the same addon for WoW Forever it is
+        installed from there and Wago is kept as a second source — whichever has the higher version
+        number is used. Otherwise it is installed and kept updated from Wago alone."""
+        wg = self.wago()
+        if not wg:
+            raise UserError("Add your Wago key in Settings first.")
+        key = wago_key(wago_id)
+        for k, r in self.store.addons.items():
+            if str((r.get("wago") or {}).get("id")) == str(wago_id) and self._folders_present(r):
+                self.log(f"{r.get('name')} is already installed.", "ok")
+                return
+        payload = wg.addon(wago_id)
+        name = payload.get("display_name") or payload.get("name") or str(wago_id)
+        slug = payload.get("slug") or ""
+        channel = self.store.config.get("channel", "release")
+        rel = Wago.pick_release(payload, channel)
+        url = payload.get("website_url") or f"https://addons.wago.io/addons/{slug or wago_id}"
+        mod = None
+        if slug and (self.store.config.get("api_key") or "").strip():
+            try:
+                cf = self.client()
+                type_id = self.ensure_type(cf)
+                mod = next((m for m in cf.search_slug(slug) if same_name(m.get("name"), name)), None)
+                if mod and not pick_latest(cf.files(mod["id"], type_id), type_id, channel):
+                    mod = None          # on CurseForge, but not for WoW Forever
+            except UserError:
+                mod = None
+        if mod:
+            self.log(f"{name} is on CurseForge too — installing from there, with Wago as a second source.")
+            self._add_refs([{"kind": "id", "id": mod["id"], "file": None, "raw": name}])
+            rec = self.store.addons.get(str(mod["id"]))
+            if not rec or not self._folders_present(rec):
+                if not rel:
+                    return
+                self.log(f"{name}: trying Wago instead.")
+            else:
+                with self.store.lock:
+                    rec["wago"] = {"id": str(wago_id), "via": "direct", "url": url}
+                    rec["wago_latest"] = rel
+                    self.store.save_state()
+                if rel and self.update_source(rec) == "wago" and not rec.get("pinned"):
+                    self.log(f"Wago has a newer version of {name} ({rel['label']}) — using that.")
+                    self._install_from_wago({"id": mod["id"], "name": rec["name"]}, rec, rel)
+                return
+        if not rel:
+            raise UserError(f"{name} has no WoW Forever release on Wago ({channel} channel).")
+        self.backup_wtf()
+        with self.store.lock:
+            rec = self.store.addons.setdefault(key, {})
+            rec.update({"name": name, "slug": slug, "url": url, "summary": payload.get("summary") or "",
+                        "authors": [x if isinstance(x, str) else (x.get("name") or "") for x in payload.get("authors") or []],
+                        "logo": payload.get("thumbnail_image") or payload.get("logo") or "",
+                        "wago": {"id": str(wago_id), "via": "direct", "url": url}, "wago_latest": rel,
+                        "source": "wago", "latest_checked_at": time.time()})
+        try:
+            self._install_from_wago({"id": key, "name": name}, rec, rel)
+        except UserError:
+            with self.store.lock:
+                if not rec.get("folders"):
+                    self.store.addons.pop(key, None)
+                    self.store.save_state()
+            raise
+
+    def _update_wago_only(self, key: str, rec: dict):
+        rel = rec.get("wago_latest")
+        if self.status_of(rec) == "missing" or not rel:
+            wg = self.wago()
+            if not wg:
+                raise UserError("needs your Wago key (Settings)")
+            rel = Wago.pick_release(wg.addon(rec["wago"]["id"]), self.store.config.get("channel", "release"))
+            if not rel:
+                raise UserError("no WoW Forever release on Wago right now.")
+            rec["wago_latest"] = rel
+        self._install_from_wago({"id": key, "name": rec.get("name") or key}, rec, rel, rec.get("pinned", False))
 
     # -- GitHub --------------------------------------------------------------- #
     def _try_github(self, mod: dict, rec: dict, pinned: bool) -> bool:
@@ -3373,7 +3592,7 @@ class Manager:
         if not recs:
             self.log("No managed addons yet — paste some CurseForge links first.")
             return
-        ids = [int(k) for k in recs]
+        ids = [int(k) for k in recs if not is_wago_key(k)]
         mods: dict[int, dict] = {}
         for c in chunks(ids, 50):
             for m in cf.mods(c):
@@ -3514,7 +3733,7 @@ class Manager:
         self.backup_wtf()
         # One request for all the addons' details and one for all their files…
         mods: dict[str, dict] = {}
-        for c in chunks([int(k) for k in targets], 50):
+        for c in chunks([int(k) for k in targets if not is_wago_key(k)], 50):
             for m in cf.mods(c):
                 mods[str(m["id"])] = m
         want: dict[str, int] = {}
@@ -3562,6 +3781,9 @@ class Manager:
             for key in targets:
                 rec = recs[key]
                 try:
+                    if is_wago_key(key):
+                        self._update_wago_only(key, rec)
+                        continue
                     mod = mods.get(key) or cf.mod(int(key))
                     if self.update_source(rec) == "wago" and self.status_of(rec) != "missing":
                         try:
@@ -3817,7 +4039,17 @@ class Manager:
             return "update"
         return "ok" if rec.get("latest_checked_at") else "unchecked"
 
+    def follow_game_interface(self):
+        cfg = self.store.config
+        found = game_interface(cfg.get("addons_dir"))
+        if found and cfg.get("interface_auto", True) and str(cfg.get("interface")) != found:
+            old = cfg.get("interface")
+            self.store.update_config(interface=found)
+            self.log(f"WoW Forever now reports interface {found} (was {old}) — addons are checked against that.")
+        return found
+
     def snapshot(self, since: int = 0) -> dict:
+        found = self.follow_game_interface()
         cfg = self.store.config
         key = cfg.get("api_key") or ""
         d = cfg.get("addons_dir") or ""
@@ -3853,8 +4085,10 @@ class Manager:
                 "installed_file_id": r.get("installed_file_id"),
                 "installed_date": r.get("installed_file_date"), "installed_at": r.get("installed_at"),
                 "installed_release_type": RELEASE_TYPES.get(r.get("installed_release_type") or 1),
-                "latest_version": r.get("latest_version"), "latest_file_id": r.get("latest_file_id"),
-                "latest_date": r.get("latest_date"), "checked_at": r.get("latest_checked_at"),
+                "latest_version": (r.get("wago_latest") or {}).get("label") if is_wago_key(k) else r.get("latest_version"),
+                "latest_file_id": r.get("latest_file_id"),
+                "latest_date": (r.get("wago_latest") or {}).get("created_at") if is_wago_key(k) else r.get("latest_date"),
+                "checked_at": r.get("latest_checked_at"), "wago_only": is_wago_key(k),
                 "latest_url": f"{r.get('url')}/files/{r['latest_file_id']}" if r.get("latest_file_id") else r.get("url"),
                 "source": r.get("source") or "curseforge", "github": r.get("github"),
                 "update_from": self.update_source(r) if self.status_of(r) in ("update", "update_manual") else None,
@@ -3932,6 +4166,7 @@ class Manager:
                 "addons_dir_is_forever": "forever" in d.lower(),
                 "version_type_id": cfg.get("version_type_id"), "version_type_name": cfg.get("version_type_name"),
                 "channel": cfg.get("channel"), "interface": wanted,
+                "interface_detected": found, "interface_auto": bool(cfg.get("interface_auto", True)),
                 "auto_dependencies": cfg.get("auto_dependencies", True),
                 "auto_manual": cfg.get("auto_manual", True),
                 "delete_after_install": cfg.get("delete_after_install", True),
@@ -4111,7 +4346,10 @@ class App:
             if body.get("channel") in CHANNELS:
                 changes["channel"] = body["channel"]
             if "interface" in body:
-                changes["interface"] = re.sub(r"[^0-9]", "", str(body["interface"]))
+                typed = re.sub(r"[^0-9]", "", str(body["interface"]))
+                found = game_interface(changes.get("addons_dir") or m.store.config.get("addons_dir"))
+                changes["interface_auto"] = not typed or typed == found
+                changes["interface"] = typed or found or DEFAULT_INTERFACE
             if "auto_dependencies" in body:
                 changes["auto_dependencies"] = bool(body["auto_dependencies"])
             if "backup_keep" in body:
@@ -4224,6 +4462,17 @@ class App:
             return {"ok": True}
         if path == "/api/import":
             m.run_job("Importing addon list", m.op_import, raw)
+            return {"ok": True}
+        if path == "/api/import_text":
+            text = str(body.get("text") or "")[:200000]
+            if not text.strip():
+                raise UserError("Paste a share code first.")
+            m.run_job("Importing addon list", m.op_import, text.encode("utf-8"), True)
+            return {"ok": True}
+        if path == "/api/share_code":
+            return {"code": m.share_code(), "count": len(m.store.addons)}
+        if path == "/api/add_wago":
+            m.run_job("Installing from Wago", m.op_add_wago, str(body.get("id") or ""))
             return {"ok": True}
         if path == "/api/diagnose":
             m.run_job("Running diagnostics", m.op_diagnose)
@@ -4996,6 +5245,17 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
   <div class="foot" style="margin-top:16px"><button class="btn ghost danger" id="btUndo" style="margin-right:auto" title="Put back the versions you had before (they get pinned)">Undo this update</button><button class="btn primary" id="btClose">Close</button></div>
 </div></div>
 
+<div class="modal" id="mShare"><div class="dlg" style="max-width:620px">
+  <h3>Share or move your addon list</h3>
+  <p class="sub">One line of text with all your addons. Paste it to a friend, or into this program on another PC.</p>
+  <textarea id="shCode" readonly rows="3" spellcheck="false" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px;justify-content:flex-start"><button class="btn primary" id="shCopy">Copy code</button><span class="dim" id="shCount" style="margin-left:10px;align-self:center"></span></div>
+  <h3 style="margin-top:22px">Install from a code</h3>
+  <p class="sub">Paste a share code (or a list of CurseForge links). Addons you already have are skipped.</p>
+  <textarea id="shIn" rows="3" spellcheck="false" placeholder="WFA1.…" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px"><button class="btn" id="shClose">Close</button><button class="btn primary" id="shGo">Install these addons</button></div>
+</div></div>
+
 <div class="modal" id="mAsk"><div class="dlg" style="max-width:460px">
   <h3 id="askT"></h3><p class="sub" id="askB" style="white-space:pre-line"></p>
   <input id="askIn" hidden autocomplete="off" spellcheck="false">
@@ -5041,8 +5301,8 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
         </div>
         <div class="field">
           <label for="fIf">Game interface number</label>
-          <input id="fIf" inputmode="numeric" autocomplete="off">
-          <div class="help">Only used to flag addons made for another client.</div>
+          <input id="fIf" inputmode="numeric" autocomplete="off" placeholder="Automatic">
+          <div class="help" id="fIfHelp">Used to flag addons made for another WoW version.</div>
         </div>
       </div>
     </div>
@@ -5151,7 +5411,7 @@ function logoEl(src, name, cls){ const fb=()=>h("div",{class:cls||"logo"},(name|
 
 function clientName(n){
   n = parseInt(n,10); if (!n) return "another client";
-  if (n === 16001 || (n >= 16000 && n < 17000)) return "WoW Forever";
+  if (n >= 16000 && n < 17000){ const cur = parseInt((S && S.config.interface) || "16001",10); return n < cur ? "an older WoW Forever patch" : n > cur ? "a newer WoW Forever patch" : "WoW Forever"; }
   if (n < 20000) return "Classic Era";
   if (n < 30000) return "TBC Anniversary";
   if (n < 40000) return "Titan-Reforged Classic";
@@ -5162,7 +5422,7 @@ function clientName(n){
 }
 function compatNote(ifs, file){
   const names = [...new Set(ifs.map(clientName))].join(" / ");
-  return h("div",{class:"compat",title:`${file||".toc"} says Interface ${ifs.join(", ")}. WoW Forever expects 16001, so the game may list it as out of date or not load it.`}, "⚠ Made for " + names + " (" + ifs.join(", ") + ")");
+  return h("div",{class:"compat",title:`${file||".toc"} says Interface ${ifs.join(", ")}. WoW Forever expects ${(S && S.config.interface) || "16001"}, so the game may list it as out of date or not load it. Check for updates — a newer version may fix it.`}, "⚠ Made for " + names + " (" + ifs.join(", ") + ")");
 }
 const STATUS = {
   ok:["Up to date","ok"], update:["Update available","update"], update_manual:["Update — manual download","update_manual"],
@@ -5333,18 +5593,19 @@ function addonRow(a, busy){
     h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
-  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a")) openDetail(a.key); });
+  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only) openDetail(a.key); });
   return tr;
 }
 function rowMenu(a, busy){
   return [
-    {label:"Details…", run:()=>openDetail(a.key)},
-    a.latest_version && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
+    a.wago_only ? null : {label:"Details…", run:()=>openDetail(a.key)},
+    a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
     {label:"Install from a zip…", disabled:busy, run:()=>pickZip(a.key)},
-    a.url ? {label:"Open on CurseForge ↗", href:a.url} : null,
+    a.url ? {label: a.wago_only ? "Open on Wago ↗" : "Open on CurseForge ↗", href:a.url} : null,
+    a.wago_url && !a.wago_only ? {label:"Open on Wago ↗", href:a.wago_url} : null,
     "-",
     {label:"Remove", danger:true, disabled:busy, run:async ()=>{ if (await ask(`Remove ${a.name}?`, a.folders.length ? `These folders will be deleted from AddOns:\n${a.folders.join("\n")}` : "It will no longer be tracked.", "Remove")) act("/api/remove",{key:a.key}); }},
   ];
@@ -5536,7 +5797,7 @@ function renderWago(box){
   box.replaceChildren(h("div",{class:"grid"}, ...B.results.map(r=>{
     const busyNow = S && S.job.running;
     const btn = r.installed ? h("span",{class:"tag ok"},"Installed ✓")
-      : h("button",{class:"btn small primary",disabled:busyNow,title:"Installs it through its CurseForge project (Wago then keeps it updated when it's newer there)",onclick:e=>{ e.stopPropagation(); act("/api/add",{text:r.slug}); }},"Install");
+      : h("button",{class:"btn small primary",disabled:busyNow,title:"If CurseForge has it for WoW Forever too, it's installed from there and Wago is kept as a second source — whichever has the higher version number wins. Otherwise it's installed and updated from Wago.",onclick:e=>{ e.stopPropagation(); act("/api/add_wago",{id:r.id}); }},"Install");
     return h("div",{class:"res",title:r.summary},
       logoEl(r.logo, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
@@ -5561,7 +5822,7 @@ function renderBrowse(){
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
   $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
-  $("#srcHint").textContent = B.src === "wago" ? "Addons are installed through CurseForge when they're there too; Wago keeps them updated when it has a newer release." : "";
+  $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";
   if (B.src === "wago"){ renderWago($("#bres")); setMeta(B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
@@ -5744,7 +6005,11 @@ function openSettings(setup){
   if (c.version_type_id && ![...sel.options].some(o=>o.value==String(c.version_type_id))) sel.append(h("option",{value:c.version_type_id}, (c.version_type_name||"id "+c.version_type_id)));
   sel.value = c.version_type_id ? String(c.version_type_id) : "auto";
   $("#fChan").value = c.channel || "release";
-  $("#fIf").value = c.interface || "";
+  $("#fIf").value = c.interface_auto ? "" : (c.interface || "");
+  $("#fIf").placeholder = c.interface_detected ? "Automatic — " + c.interface_detected : "Automatic — " + (c.interface || "16001");
+  $("#fIfHelp").textContent = c.interface_detected
+    ? "Read from the game itself, so it follows WoW Forever patches. Type a number only to override it."
+    : "Read from the game once you've started WoW Forever. Until then " + (c.interface || "16001") + " is used.";
   $("#fDeps").checked = c.auto_dependencies !== false;
   $("#fAutoMan").checked = c.auto_manual !== false;
   $("#fDel").checked = c.delete_after_install !== false;
@@ -5824,7 +6089,8 @@ $("#bMoreIns").onclick = e=>openMenu(e.currentTarget, [
   S && S.last_batch ? {label:"Undo the last update", disabled:S.job.running, run:()=>$("#btUndo").onclick()} : null,
   S && S.last_batch ? "-" : null,
   {label:"Install from a zip file…", disabled:S && S.job.running, run:()=>pickZip(null)},
-  {label:"Import a list…", run:()=>{ $("#importFile").value=""; $("#importFile").click(); }},
+  {label:"Share / move my list…", run:openShare},
+  {label:"Import a list file…", run:()=>{ $("#importFile").value=""; $("#importFile").click(); }},
   {label:"Export my list", href:"/api/export", download:"wow-forever-addons.json"},
   "-",
   {label:"Look up hand-installed addons", disabled:S && S.job.running, run:()=>act("/api/scan")},
@@ -5869,6 +6135,16 @@ document.addEventListener("click", e=>{
   if (window.chrome && window.chrome.webview){ e.preventDefault(); post("/api/open_url", {url:u.href}).catch(()=>{}); }
 }, true);
 $("#bScan").onclick = ()=>act("/api/scan");
+async function openShare(){
+  $("#shCode").value = "…"; $("#shIn").value = ""; $("#shCount").textContent = "";
+  $("#mShare").classList.add("show");
+  try{ const r = await post("/api/share_code",{}); $("#shCode").value = r.code; $("#shCount").textContent = r.count + " addon" + (r.count===1?"":"s"); }
+  catch(e){ $("#shCode").value = e.message; }
+}
+$("#shCopy").onclick = async ()=>{ const t = $("#shCode").value; try{ await navigator.clipboard.writeText(t); }catch(e){ $("#shCode").select(); document.execCommand("copy"); } $("#shCopy").textContent = "Copied ✓"; setTimeout(()=>$("#shCopy").textContent="Copy code", 2000); };
+$("#shClose").onclick = ()=>$("#mShare").classList.remove("show");
+$("#mShare").addEventListener("click", e=>{ if (e.target.id==="mShare") $("#mShare").classList.remove("show"); });
+$("#shGo").onclick = ()=>{ const t = $("#shIn").value.trim(); if (!t) return; $("#mShare").classList.remove("show"); act("/api/import_text",{text:t}); };
 $("#importFile").addEventListener("change", ()=>{ const f=$("#importFile").files[0]; if (f) act("/api/import", f); });
 $("#clClose").onclick = ()=>$("#mLog").classList.remove("show");
 $("#mLog").addEventListener("click", e=>{ if (e.target.id==="mLog") $("#mLog").classList.remove("show"); });

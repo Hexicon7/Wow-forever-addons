@@ -406,6 +406,17 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
   <div class="foot" style="margin-top:16px"><button class="btn ghost danger" id="btUndo" style="margin-right:auto" title="Put back the versions you had before (they get pinned)">Undo this update</button><button class="btn primary" id="btClose">Close</button></div>
 </div></div>
 
+<div class="modal" id="mShare"><div class="dlg" style="max-width:620px">
+  <h3>Share or move your addon list</h3>
+  <p class="sub">One line of text with all your addons. Paste it to a friend, or into this program on another PC.</p>
+  <textarea id="shCode" readonly rows="3" spellcheck="false" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px;justify-content:flex-start"><button class="btn primary" id="shCopy">Copy code</button><span class="dim" id="shCount" style="margin-left:10px;align-self:center"></span></div>
+  <h3 style="margin-top:22px">Install from a code</h3>
+  <p class="sub">Paste a share code (or a list of CurseForge links). Addons you already have are skipped.</p>
+  <textarea id="shIn" rows="3" spellcheck="false" placeholder="WFA1.…" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px"><button class="btn" id="shClose">Close</button><button class="btn primary" id="shGo">Install these addons</button></div>
+</div></div>
+
 <div class="modal" id="mAsk"><div class="dlg" style="max-width:460px">
   <h3 id="askT"></h3><p class="sub" id="askB" style="white-space:pre-line"></p>
   <input id="askIn" hidden autocomplete="off" spellcheck="false">
@@ -451,8 +462,8 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
         </div>
         <div class="field">
           <label for="fIf">Game interface number</label>
-          <input id="fIf" inputmode="numeric" autocomplete="off">
-          <div class="help">Only used to flag addons made for another client.</div>
+          <input id="fIf" inputmode="numeric" autocomplete="off" placeholder="Automatic">
+          <div class="help" id="fIfHelp">Used to flag addons made for another WoW version.</div>
         </div>
       </div>
     </div>
@@ -561,7 +572,7 @@ function logoEl(src, name, cls){ const fb=()=>h("div",{class:cls||"logo"},(name|
 
 function clientName(n){
   n = parseInt(n,10); if (!n) return "another client";
-  if (n === 16001 || (n >= 16000 && n < 17000)) return "WoW Forever";
+  if (n >= 16000 && n < 17000){ const cur = parseInt((S && S.config.interface) || "16001",10); return n < cur ? "an older WoW Forever patch" : n > cur ? "a newer WoW Forever patch" : "WoW Forever"; }
   if (n < 20000) return "Classic Era";
   if (n < 30000) return "TBC Anniversary";
   if (n < 40000) return "Titan-Reforged Classic";
@@ -572,7 +583,7 @@ function clientName(n){
 }
 function compatNote(ifs, file){
   const names = [...new Set(ifs.map(clientName))].join(" / ");
-  return h("div",{class:"compat",title:`${file||".toc"} says Interface ${ifs.join(", ")}. WoW Forever expects 16001, so the game may list it as out of date or not load it.`}, "⚠ Made for " + names + " (" + ifs.join(", ") + ")");
+  return h("div",{class:"compat",title:`${file||".toc"} says Interface ${ifs.join(", ")}. WoW Forever expects ${(S && S.config.interface) || "16001"}, so the game may list it as out of date or not load it. Check for updates — a newer version may fix it.`}, "⚠ Made for " + names + " (" + ifs.join(", ") + ")");
 }
 const STATUS = {
   ok:["Up to date","ok"], update:["Update available","update"], update_manual:["Update — manual download","update_manual"],
@@ -743,18 +754,19 @@ function addonRow(a, busy){
     h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
-  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a")) openDetail(a.key); });
+  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only) openDetail(a.key); });
   return tr;
 }
 function rowMenu(a, busy){
   return [
-    {label:"Details…", run:()=>openDetail(a.key)},
-    a.latest_version && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
+    a.wago_only ? null : {label:"Details…", run:()=>openDetail(a.key)},
+    a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
     {label:"Install from a zip…", disabled:busy, run:()=>pickZip(a.key)},
-    a.url ? {label:"Open on CurseForge ↗", href:a.url} : null,
+    a.url ? {label: a.wago_only ? "Open on Wago ↗" : "Open on CurseForge ↗", href:a.url} : null,
+    a.wago_url && !a.wago_only ? {label:"Open on Wago ↗", href:a.wago_url} : null,
     "-",
     {label:"Remove", danger:true, disabled:busy, run:async ()=>{ if (await ask(`Remove ${a.name}?`, a.folders.length ? `These folders will be deleted from AddOns:\n${a.folders.join("\n")}` : "It will no longer be tracked.", "Remove")) act("/api/remove",{key:a.key}); }},
   ];
@@ -946,7 +958,7 @@ function renderWago(box){
   box.replaceChildren(h("div",{class:"grid"}, ...B.results.map(r=>{
     const busyNow = S && S.job.running;
     const btn = r.installed ? h("span",{class:"tag ok"},"Installed ✓")
-      : h("button",{class:"btn small primary",disabled:busyNow,title:"Installs it through its CurseForge project (Wago then keeps it updated when it's newer there)",onclick:e=>{ e.stopPropagation(); act("/api/add",{text:r.slug}); }},"Install");
+      : h("button",{class:"btn small primary",disabled:busyNow,title:"If CurseForge has it for WoW Forever too, it's installed from there and Wago is kept as a second source — whichever has the higher version number wins. Otherwise it's installed and updated from Wago.",onclick:e=>{ e.stopPropagation(); act("/api/add_wago",{id:r.id}); }},"Install");
     return h("div",{class:"res",title:r.summary},
       logoEl(r.logo, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
@@ -971,7 +983,7 @@ function renderBrowse(){
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
   $("#bcat").hidden = $("#bsort").hidden = B.src === "wago";
-  $("#srcHint").textContent = B.src === "wago" ? "Addons are installed through CurseForge when they're there too; Wago keeps them updated when it has a newer release." : "";
+  $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";
   if (B.src === "wago"){ renderWago($("#bres")); setMeta(B.loaded && !B.error ? B.total + " result" + (B.total===1?"":"s") + " on Wago" : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
@@ -1154,7 +1166,11 @@ function openSettings(setup){
   if (c.version_type_id && ![...sel.options].some(o=>o.value==String(c.version_type_id))) sel.append(h("option",{value:c.version_type_id}, (c.version_type_name||"id "+c.version_type_id)));
   sel.value = c.version_type_id ? String(c.version_type_id) : "auto";
   $("#fChan").value = c.channel || "release";
-  $("#fIf").value = c.interface || "";
+  $("#fIf").value = c.interface_auto ? "" : (c.interface || "");
+  $("#fIf").placeholder = c.interface_detected ? "Automatic — " + c.interface_detected : "Automatic — " + (c.interface || "16001");
+  $("#fIfHelp").textContent = c.interface_detected
+    ? "Read from the game itself, so it follows WoW Forever patches. Type a number only to override it."
+    : "Read from the game once you've started WoW Forever. Until then " + (c.interface || "16001") + " is used.";
   $("#fDeps").checked = c.auto_dependencies !== false;
   $("#fAutoMan").checked = c.auto_manual !== false;
   $("#fDel").checked = c.delete_after_install !== false;
@@ -1234,7 +1250,8 @@ $("#bMoreIns").onclick = e=>openMenu(e.currentTarget, [
   S && S.last_batch ? {label:"Undo the last update", disabled:S.job.running, run:()=>$("#btUndo").onclick()} : null,
   S && S.last_batch ? "-" : null,
   {label:"Install from a zip file…", disabled:S && S.job.running, run:()=>pickZip(null)},
-  {label:"Import a list…", run:()=>{ $("#importFile").value=""; $("#importFile").click(); }},
+  {label:"Share / move my list…", run:openShare},
+  {label:"Import a list file…", run:()=>{ $("#importFile").value=""; $("#importFile").click(); }},
   {label:"Export my list", href:"/api/export", download:"wow-forever-addons.json"},
   "-",
   {label:"Look up hand-installed addons", disabled:S && S.job.running, run:()=>act("/api/scan")},
@@ -1279,6 +1296,16 @@ document.addEventListener("click", e=>{
   if (window.chrome && window.chrome.webview){ e.preventDefault(); post("/api/open_url", {url:u.href}).catch(()=>{}); }
 }, true);
 $("#bScan").onclick = ()=>act("/api/scan");
+async function openShare(){
+  $("#shCode").value = "…"; $("#shIn").value = ""; $("#shCount").textContent = "";
+  $("#mShare").classList.add("show");
+  try{ const r = await post("/api/share_code",{}); $("#shCode").value = r.code; $("#shCount").textContent = r.count + " addon" + (r.count===1?"":"s"); }
+  catch(e){ $("#shCode").value = e.message; }
+}
+$("#shCopy").onclick = async ()=>{ const t = $("#shCode").value; try{ await navigator.clipboard.writeText(t); }catch(e){ $("#shCode").select(); document.execCommand("copy"); } $("#shCopy").textContent = "Copied ✓"; setTimeout(()=>$("#shCopy").textContent="Copy code", 2000); };
+$("#shClose").onclick = ()=>$("#mShare").classList.remove("show");
+$("#mShare").addEventListener("click", e=>{ if (e.target.id==="mShare") $("#mShare").classList.remove("show"); });
+$("#shGo").onclick = ()=>{ const t = $("#shIn").value.trim(); if (!t) return; $("#mShare").classList.remove("show"); act("/api/import_text",{text:t}); };
 $("#importFile").addEventListener("change", ()=>{ const f=$("#importFile").files[0]; if (f) act("/api/import", f); });
 $("#clClose").onclick = ()=>$("#mLog").classList.remove("show");
 $("#mLog").addEventListener("click", e=>{ if (e.target.id==="mLog") $("#mLog").classList.remove("show"); });
