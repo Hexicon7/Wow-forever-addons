@@ -8,7 +8,7 @@ the background when you are not using it.
 
 INSTALL (about 2 minutes)
 -------------------------
-1. Double-click WoWForeverAddons-Setup-3.10.0.exe and answer Yes.
+1. Double-click WoWForeverAddons-Setup-3.11.0.exe and answer Yes.
    Windows may say "Windows protected your PC" because the installer is new
    and not code-signed: click "More info" -> "Run anyway".
    The installer:
@@ -23,7 +23,7 @@ INSTALL (about 2 minutes)
    every file of the old version and installs the new one from scratch
    (Python is reused only if it is exactly the right, signed version).
    Your settings, API keys and addons are kept.
-   Silent install: WoWForeverAddons-Setup-3.10.0.exe /quiet
+   Silent install: WoWForeverAddons-Setup-3.11.0.exe /quiet
 
 UNINSTALL
 ---------

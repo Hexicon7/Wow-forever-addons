@@ -102,7 +102,8 @@ check(st["Questie"] == "update" and st["Deadly Boss Mods (DBM)"] == "update", "u
 check(st["BugSack"] == "ok", "beta release ignored on release channel")
 check(st["Leatrix Plus"] == "update_manual", "manual update flagged: " + st["Leatrix Plus"])
 fake_cf.LOG.clear(); run(m.op_check)
-check(len(fake_cf.LOG) <= 3, f"check uses batched requests ({len(fake_cf.LOG)} calls)")
+cf_calls = [x for x in fake_cf.LOG if "/gh/" not in str(x)]
+check(len(cf_calls) <= 3, f"check uses batched CurseForge requests ({len(cf_calls)} calls; GitHub looked up separately)")
 
 store.addons["1003"]["pinned"] = True
 req({"mod": 1003, "version": "v12.2.0", "entries": {"!BugGrabber/!BugGrabber.toc": fake_cf.toc("BG", "12.2")}})

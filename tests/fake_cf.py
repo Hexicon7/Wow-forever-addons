@@ -81,6 +81,8 @@ def add_file(mid, version, entries, type_id=FOREVER, release=1, deps=(), fname=N
     FILES[fid] = f
     MODS[mid]["latestFilesIndexes"].append({"gameVersion": "1.60.1", "fileId": fid, "filename": fname,
                                             "releaseType": release, "gameVersionTypeId": type_id})
+    MODS[mid].setdefault("latestFiles", []).append({k: v for k, v in f.items() if k != "modules"})
+    MODS[mid]["latestFiles"] = MODS[mid]["latestFiles"][-6:]
     return fid
 
 

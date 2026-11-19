@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.10.0"
+APP_VERSION = "3.11.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -194,7 +194,8 @@ def wago_key(wago_id: str) -> str:
     return WAGO_KEY_PREFIX + wid
 # Fields that hold data from the CurseForge API: kept in memory only, never written to disk.
 CF_FIELDS = ("name", "slug", "url", "summary", "authors", "logo", "library", "distribution_disabled", "latest_file_id",
-             "latest_version", "latest_date", "latest_sha1", "latest_release_type", "latest_checked_at", "awaiting")
+             "latest_version", "latest_date", "latest_sha1", "latest_release_type", "latest_checked_at", "awaiting",
+             "cf_latest")
 CF_INSTALLED_FIELDS = ("installed_version", "installed_file_name", "installed_file_date", "installed_release_type")
 AWAIT_SECONDS = 30 * 60
 
@@ -1243,6 +1244,11 @@ def version_cmp(a: str | None, b: str | None) -> int | None:
     return (ta > tb) - (ta < tb)
 
 
+def exact_name(a: str | None, b: str | None) -> bool:
+    na, nb = re.sub(r"[^a-z0-9]", "", (a or "").lower()), re.sub(r"[^a-z0-9]", "", (b or "").lower())
+    return bool(na) and na == nb
+
+
 def same_name(a: str | None, b: str | None) -> bool:
     na, nb = re.sub(r"[^a-z0-9]", "", (a or "").lower()), re.sub(r"[^a-z0-9]", "", (b or "").lower())
     return bool(na and nb) and (na == nb or (len(na) > 4 and len(nb) > 4 and (na in nb or nb in na)))
@@ -2117,6 +2123,9 @@ class Manager:
             "library": is_library(mod),
             "distribution_disabled": mod.get("allowModDistribution") is False,
         })
+        repo = github_repo_of(mod)
+        if repo and not rec.get("github"):
+            rec["github"] = repo            # GitHub as a third place to look for a newer version
 
     @staticmethod
     def _set_latest(rec: dict, f: dict | None):
@@ -2128,6 +2137,8 @@ class Manager:
         rec.update(latest_file_id=f["id"], latest_version=f.get("displayName") or f.get("fileName"),
                    latest_date=f.get("fileDate"), latest_sha1=file_sha1(f),
                    latest_release_type=f.get("releaseType", 1))
+        # kept apart too: for an addon installed from GitHub, latest_* describe GitHub's release
+        rec["cf_latest"] = {"version": rec["latest_version"], "file_id": f["id"], "date": f.get("fileDate")}
 
     def _owners(self, exclude_key: str | None = None) -> dict[str, list[str]]:
         owners: dict[str, list[str]] = {}
@@ -2254,7 +2265,7 @@ class Manager:
                 "manual": False,
                 "source": "curseforge",
             })
-            for k in ("gh_installed", "gh_latest", "wago_installed"):
+            for k in ("gh_installed", "gh_latest", "wago_installed", "gh_alt_installed"):
                 rec.pop(k, None)
             if not rec.get("latest_file_id") or f["id"] >= rec["latest_file_id"]:
                 self._set_latest(rec, f)
@@ -3187,8 +3198,85 @@ class Manager:
         return bool(rec.get("latest_file_id") and a and b and a > b + 600
                     and norm_version(rec.get("latest_version")) != norm_version(rec.get("installed_version")))
 
+    def label_of(self, rec: dict, src: str | None) -> str | None:
+        """The version a source would install."""
+        if src == "curseforge":
+            if rec.get("source") == "github":
+                return (rec.get("cf_latest") or {}).get("version")
+            return rec.get("latest_version")
+        if src == "wago":
+            return (rec.get("wago_latest") or {}).get("label")
+        if src == "tukui":
+            return (rec.get("tukui_latest") or {}).get("version")
+        if src == "github":
+            gh = rec.get("gh_latest") if rec.get("source") == "github" else rec.get("gh_alt")
+            return (gh or {}).get("name") or (gh or {}).get("tag")
+        return None
+
+    def newest_available(self, rec: dict) -> tuple[str | None, str | None, str | None]:
+        """(version, date, source) of the newest version anywhere — CurseForge, Wago, GitHub or tukui.org."""
+        src = rec.get("source") or "curseforge"
+        cands = []
+        if src == "tukui":
+            tl = rec.get("tukui_latest") or {}
+            cands.append((tl.get("version"), tl.get("date"), "tukui"))
+        else:
+            if src == "github":
+                cfl = rec.get("cf_latest") or {}
+                if cfl.get("file_id"):
+                    cands.append((cfl.get("version"), cfl.get("date"), "curseforge"))
+                gl = rec.get("gh_latest") or {}
+                cands.append((gl.get("name") or gl.get("tag"), gl.get("date"), "github"))
+            elif rec.get("latest_file_id"):
+                cands.append((rec.get("latest_version"), rec.get("latest_date"), "curseforge"))
+            wl = rec.get("wago_latest") or {}
+            if wl.get("label"):
+                cands.append((wl.get("label"), wl.get("created_at"), "wago"))
+            ga = rec.get("gh_alt") if src != "github" and self.store.config.get("use_github", True) else None
+            if ga:
+                cands.append((ga.get("name") or ga.get("tag"), ga.get("date"), "github"))
+        cands = [c for c in cands if c[0]]
+        if not cands:
+            return None, None, None
+        up = self.update_source(rec)
+        if up:      # what Update would install is by definition the newest
+            hit = next((c for c in cands if c[2] == up), None)
+            if hit:
+                return hit
+        inst = rec.get("installed_version")
+        best = cands[0]
+        for c in cands[1:]:
+            cmp = version_cmp(c[0], best[0])
+            if (cmp or 0) > 0 or (cmp is None and (_ts(c[1]) or 0) > (_ts(best[1]) or 0)):
+                best = c
+        # nothing newer than what's installed: show the installed version as the latest
+        if inst and (version_cmp(best[0], inst) or 0) < 0:
+            return inst, rec.get("installed_file_date"), src
+        return best
+
     def update_source(self, rec: dict) -> str | None:
-        """Where the newest version comes from: 'wago', 'curseforge', 'github' or None."""
+        """Where the newest version comes from — CurseForge, Wago or GitHub, whichever has the highest
+        version number — or None when what's installed is the newest."""
+        base = self._base_update_source(rec)
+        src = rec.get("source") or "curseforge"
+        if src == "tukui":
+            return base
+        inst = rec.get("installed_version")
+        cfl = rec.get("cf_latest") or {}
+        if src == "github" and rec.get("gh_alt_installed") and cfl.get("file_id") \
+                and not rec.get("distribution_disabled"):
+            c = version_cmp(cfl.get("version"), inst)     # GitHub was newest when installed; now CurseForge?
+            if c and c > 0 and (base is None or (version_cmp(cfl.get("version"), self.label_of(rec, base)) or 0) > 0):
+                base = "curseforge"
+        gh = rec.get("gh_alt") if src != "github" else None
+        if gh and self.store.config.get("use_github", True):
+            gl = gh.get("name") or gh.get("tag")
+            c = version_cmp(gl, inst)
+            if c and c > 0 and (base is None or (version_cmp(gl, self.label_of(rec, base)) or 0) > 0):
+                return "github"
+        return base
+
+    def _base_update_source(self, rec: dict) -> str | None:
         src = rec.get("source") or "curseforge"
         if src == "tukui":
             tl, inst = (rec.get("tukui_latest") or {}).get("version"), rec.get("installed_version")
@@ -3285,7 +3373,7 @@ class Manager:
                 "installed_sha1": digest, "installed_at": now_iso(), "manual": False, "pinned": pinned,
                 "source": "wago", "wago_installed": {"label": rel["label"], "created_at": rel["created_at"]},
             })
-            for k in ("gh_installed",):
+            for k in ("gh_installed", "gh_alt_installed"):
                 rec.pop(k, None)
             rec.pop("awaiting", None)
             self.store.save_state()
@@ -3337,6 +3425,148 @@ class Manager:
                             self.log(f"{r.get('name')}: no WoW Forever release on Wago right now.", "warn")
         except UserError as e:
             self.log(f"Wago: {e}", "warn")
+
+    def merge_wago(self, results: list[dict], query: str | None, show_all: bool) -> list[dict]:
+        """One list for CurseForge and Wago: each CurseForge result gets Wago's version too, and the newer
+        of the two is the one shown. With a search text, addons that are only on Wago are added (returned)."""
+        for r in results:
+            r.update(sources=["curseforge"] + (["github"] if r.get("github") else []),
+                     version=r.get("cf_version"), version_from="curseforge", version_date=r.get("cf_date"))
+        wg = self.wago()
+        if not wg:
+            return []
+        try:
+            slugs = wg.slugs()
+        except UserError:
+            slugs = {}
+        hits = []
+        if query and len(query) >= 2:
+            try:
+                hits = [a for a in wg.search(query)[:40] if a.get("id")]
+            except UserError:
+                hits = []
+        by_slug = {(a.get("slug") or "").lower(): a for a in hits}
+        link = {}
+        for r in results:
+            w = (slugs.get(r.get("slug")) or {}).get("id") or (by_slug.get((r.get("slug") or "").lower()) or {}).get("id")
+            if not w:
+                w = next((a["id"] for a in hits if exact_name(a.get("display_name") or a.get("name"), r["name"])), None)
+            if w:
+                link[r["id"]] = str(w)
+        try:
+            rec = wg.recents(list({*link.values(), *(str(a["id"]) for a in hits)})) if (link or hits) else {}
+        except UserError:
+            rec = {}
+        channel = self.store.config.get("channel", "release")
+        allowed = {"release": ("stable",), "beta": ("stable", "beta"), "alpha": ("stable", "beta", "alpha")}.get(channel, ("stable",))
+
+        def newest(wid):
+            rr = ((rec.get(wid) or {}).get("recent_releases") or {})
+            best = None
+            for ch in allowed:
+                x = rr.get(ch)
+                if isinstance(x, dict) and x.get("created_at") and (not best or x["created_at"] > best["created_at"]):
+                    best = x
+            return best
+        used = set()
+        for r in results:
+            wid = link.get(r["id"])
+            nb = newest(wid) if wid else None
+            if not nb:
+                continue
+            used.add(wid)
+            r["wago_id"], r["wago_version"] = wid, nb.get("label")
+            r["sources"].insert(1, "wago")
+            c = version_cmp(nb.get("label"), r.get("cf_version"))
+            newer = c > 0 if c is not None else (not r.get("cf_version") or (_ts(nb["created_at"]) or 0) > (_ts(r.get("cf_date")) or 0) + 600)
+            if newer or not r.get("forever"):
+                r.update(version=nb.get("label"), version_from="wago", version_date=nb.get("created_at"), forever=True)
+        managed_ids = {str((x.get("wago") or {}).get("id")) for x in self.store.addons.values() if x.get("wago") and self._folders_present(x)}
+        cf_names = [r["name"] for r in results]
+        extra = []
+        for a in hits:
+            wid = str(a["id"])
+            if wid in used or any(exact_name(a.get("display_name") or a.get("name"), n) for n in cf_names):
+                continue
+            nb = newest(wid)
+            if not nb and not show_all:
+                continue
+            slug = a.get("slug") or ""
+            extra.append({"id": "w:" + wid, "wago_id": wid, "name": a.get("display_name") or a.get("name") or slug,
+                          "summary": a.get("summary") or "", "authors": [x if isinstance(x, str) else (x.get("name") or "")
+                                                                       for x in a.get("authors") or []][:2],
+                          "logo": a.get("thumbnail_image") or "", "downloads": int(a.get("download_count") or 0),
+                          "updated": (nb or {}).get("created_at"), "url": a.get("website_url") or f"https://addons.wago.io/addons/{slug}",
+                          "categories": wago_categories(a)[:2], "manual_only": False, "github": None, "forever": bool(nb),
+                          "slug": slug, "sources": ["wago"], "version": (nb or {}).get("label"), "version_from": "wago",
+                          "version_date": (nb or {}).get("created_at"), "installed_wago": wid in managed_ids})
+        return extra
+
+    def op_install_best(self, cf_id: int | None, wago_id: str | None):
+        """Install an addon from whichever of CurseForge, Wago and GitHub has the newest version."""
+        if not cf_id:
+            return self.op_add_wago(str(wago_id or ""))
+        self._add_refs([{"kind": "id", "id": int(cf_id), "file": None, "raw": str(cf_id)}])
+        rec = self.store.addons.get(str(cf_id))
+        if not rec or not self._folders_present(rec):
+            if wago_id:
+                self.log("Trying Wago instead…")
+                return self.op_add_wago(str(wago_id))
+            return
+        wg = self.wago()
+        if wago_id and wg:
+            try:
+                rel = Wago.pick_release(wg.addon(str(wago_id)), self.store.config.get("channel", "release"))
+                with self.store.lock:
+                    rec["wago"] = {"id": str(wago_id), "via": "direct", "url": (rec.get("wago") or {}).get("url")}
+                    rec["wago_latest"] = rel
+            except UserError:
+                pass
+        self._check_github_alt(rec, force=True)
+        with self.store.lock:
+            self.store.save_state()
+        src = self.update_source(rec)
+        if src in ("wago", "github") and not rec.get("pinned"):
+            mod = {"id": int(cf_id), "name": rec["name"]}
+            try:
+                if src == "wago":
+                    self.log(f"Wago has a newer {rec['name']} ({rec['wago_latest']['label']}) — using that.")
+                    self._install_from_wago(mod, rec, rec["wago_latest"])
+                else:
+                    self._install_github_alt(mod, rec)
+            except UserError as e:
+                self.log(f"{rec['name']}: {e} — keeping the CurseForge version.", "warn")
+
+    def _check_github_alt(self, rec: dict, force: bool = False):
+        """GitHub as a third source for addons that link a GitHub repo (checked at most every 6 hours,
+        GitHub only allows 60 lookups an hour without an account)."""
+        repo = rec.get("github")
+        if not repo or rec.get("source") == "github" or not self.store.config.get("use_github", True):
+            return
+        if not force and time.time() - float(rec.get("gh_alt_checked_at") or 0) < 6 * 3600:
+            return
+        try:
+            rel, asset = GitHub().find_forever(repo, self.store.config.get("channel", "release"),
+                                               str(self.store.config.get("interface") or DEFAULT_INTERFACE))
+        except UserError:
+            rec["gh_alt_checked_at"] = time.time()      # don't spend GitHub's hourly allowance retrying
+            return
+        with self.store.lock:
+            rec["gh_alt_checked_at"] = time.time()
+            rec["gh_alt"] = ({"release_id": rel["id"], "tag": rel.get("tag_name"), "name": rel.get("name") or rel.get("tag_name"),
+                              "date": rel.get("published_at"), "url": rel.get("html_url")} if rel and asset else None)
+
+    def _install_github_alt(self, mod: dict, rec: dict):
+        rel, asset = GitHub().find_forever(rec["github"], self.store.config.get("channel", "release"),
+                                           str(self.store.config.get("interface") or DEFAULT_INTERFACE))
+        if not asset:
+            raise UserError("GitHub has no WoW Forever build right now")
+        self.log(f"GitHub has a newer {rec['name']} ({rel.get('name') or rel.get('tag_name')}) — using that.")
+        self._install_from_github(mod, rec, rec["github"], rel, asset, rec.get("pinned", False))
+        with self.store.lock:
+            rec["gh_alt_installed"] = True
+            rec.pop("gh_alt", None)
+            self.store.save_state()
 
     def op_add_wago(self, wago_id: str):
         """Install an addon picked on Wago. If CurseForge has the same addon for WoW Forever it is
@@ -4154,6 +4384,12 @@ class Manager:
         self.store.save_state()
         self._check_wago(recs, channel)
         self._check_tukui(recs)
+        looked = 0
+        for k, r in list(recs.items()):
+            if str(k).isdigit() and r.get("github") and r.get("source") != "github" and looked < 20:
+                before = r.get("gh_alt_checked_at")
+                self._check_github_alt(r)
+                looked += r.get("gh_alt_checked_at") != before
         self.store.save_state()
         try:
             self._reconcile_local(cf, recs)
@@ -4268,7 +4504,8 @@ class Manager:
             return zp, cf.download(url, zp, file_sha1(f))
 
         direct = [k for k in targets if (k in want or recs[k].get("source") == "github")
-                  and self.update_source(recs[k]) != "wago"]
+                  and self.update_source(recs[k]) != "wago"
+                  and not (self.update_source(recs[k]) == "github" and recs[k].get("source") != "github")]
         if len(direct) > 1:
             self.log(f"Downloading {len(direct)} updates…")
         pre = run_parallel(prefetch, direct, workers=4)
@@ -4284,6 +4521,16 @@ class Manager:
                         self._update_tukui(key, rec)
                         continue
                     mod = mods.get(key) or cf.mod(int(key))
+                    if (self.update_source(rec) == "github" and rec.get("source") != "github"
+                            and self.status_of(rec) != "missing"):
+                        try:
+                            with self.store.lock:
+                                self._apply_meta(rec, mod)
+                            self._install_github_alt(mod, rec)
+                            continue
+                        except UserError as e:
+                            self.log(f"{rec.get('name', key)}: GitHub didn't work ({e}) — trying the others.", "warn")
+                            rec.pop("gh_alt", None)
                     if self.update_source(rec) == "wago" and self.status_of(rec) != "missing":
                         try:
                             with self.store.lock:
@@ -4576,6 +4823,7 @@ class Manager:
                     t = toc if folder == r.get("primary") else read_toc(addons_dir / folder)
                     missing += [d for d in t.get("deps") or [] if d.lower() not in present and d not in missing]
             compat = compat_of(toc.get("interfaces") or [], wanted) if toc.get("loads", True) else "mismatch"
+            newest = self.newest_available(r)
             managed.append({
                 "key": k, "name": r.get("name") or toc.get("title") or k,
                 "url": r.get("url") or f"https://www.curseforge.com/projects/{k}", "logo": r.get("logo"),
@@ -4584,15 +4832,14 @@ class Manager:
                 "installed_file_id": r.get("installed_file_id"),
                 "installed_date": r.get("installed_file_date"), "installed_at": r.get("installed_at"),
                 "installed_release_type": RELEASE_TYPES.get(r.get("installed_release_type") or 1),
-                "latest_version": (r.get("wago_latest") or {}).get("label") if is_wago_key(k)
-                else (r.get("tukui_latest") or {}).get("version") if is_tukui_key(k) else r.get("latest_version"),
+                "latest_version": newest[0], "latest_date": newest[1], "latest_from": newest[2],
+                "cf_version": r.get("latest_version") if str(k).isdigit() and r.get("source") != "github" else (r.get("cf_latest") or {}).get("version"),
                 "latest_file_id": r.get("latest_file_id"),
-                "latest_date": (r.get("wago_latest") or {}).get("created_at") if is_wago_key(k)
-                else (r.get("tukui_latest") or {}).get("date") if is_tukui_key(k) else r.get("latest_date"),
                 "checked_at": r.get("latest_checked_at"), "wago_only": is_wago_key(k), "tukui": is_tukui_key(k),
                 "latest_url": f"{r.get('url')}/files/{r['latest_file_id']}" if r.get("latest_file_id") else r.get("url"),
                 "source": r.get("source") or "curseforge", "github": r.get("github"),
                 "update_from": self.update_source(r) if self.status_of(r) in ("update", "update_manual") else None,
+                "update_version": self.label_of(r, self.update_source(r)) if self.status_of(r) in ("update", "update_manual") else None,
                 "wago_url": (r.get("wago") or {}).get("url"),
                 "wago_latest": (r.get("wago_latest") or {}).get("label") if r.get("wago") else None,
                 "github_url": ((r.get("gh_latest") or {}).get("url")
@@ -4981,6 +5228,14 @@ class App:
             return {"ok": True}
         if path == "/api/share_code":
             return {"code": m.share_code(), "count": len(m.store.addons)}
+        if path == "/api/install_best":
+            cf_id = body.get("id")
+            cf_id = int(cf_id) if str(cf_id or "").isdigit() else None
+            wid = str(body.get("wago_id") or "") or None
+            if not cf_id and not wid:
+                raise UserError("Nothing to install.")
+            m.run_job("Installing", m.op_install_best, cf_id, wid)
+            return {"ok": True}
         if path == "/api/tukui_list":
             return {"results": m.tukui_list()}
         if path == "/api/add_tukui":
@@ -5095,12 +5350,19 @@ class App:
                 if not fv and not show_all:
                     hidden += 1
                     continue
-                results.append(self._search_result(mod, fv))
+                res = self._search_result(mod, fv)
+                f = pick_latest([x for x in mod.get("latestFiles") or [] if type_id in file_type_ids(x)], type_id,
+                                m.store.config.get("channel", "release"))
+                res["cf_version"] = (f.get("displayName") or f.get("fileName")) if f else None
+                res["cf_date"] = f.get("fileDate") if f else None
+                res["slug"] = mod.get("slug") or ""
+                results.append(res)
             if show_all or len(results) >= 24 or not mods or idx >= min(total, 10000) or rounds >= 4:
                 break
         # CurseForge only pages through the first 10,000 results.
         next_index = idx if mods and idx < min(total, 10000) else None
-        return {"results": results, "total": total, "next": next_index, "hidden": hidden, "all": show_all}
+        wago_only = m.merge_wago(results, query if index == 0 and not cat else None, show_all)
+        return {"results": results + wago_only, "total": total, "next": next_index, "hidden": hidden, "all": show_all}
 
     @staticmethod
     def _search_result(mod: dict, forever: bool) -> dict:
@@ -5521,6 +5783,8 @@ tr.grp:hover td{color:var(--text)}
 .res .body{flex:1;min-width:0;display:flex;flex-direction:column}
 .res .t{font-weight:650;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .res .by{color:var(--dim);font-size:12px}
+.res .ver{font-size:12.5px;margin-top:4px;color:var(--text)}
+.res .ver b{color:var(--gold);font-weight:600}
 .res .sum{color:var(--muted);font-size:12.5px;margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex:1}
 .res .meta{color:var(--dim);font-size:11.5px;margin-top:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .res .meta .sp{flex:1}
@@ -5704,7 +5968,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       </div>
 
       <div id="vBrowse" class="view" hidden>
-        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="tukui">ElvUI &amp; Tukui</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">Addons</button><button data-src="tukui">ElvUI &amp; Tukui</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
@@ -6117,7 +6381,8 @@ function addonRow(a, busy){
   if ((a.missing_deps||[]).length) acts.push(h("button",{class:"btn small primary",disabled:busy,title:"Install what this addon needs",onclick:()=>act("/api/fix_deps",{key:a.key})},"Install missing"));
   acts.push(h("button",{class:"btn small ghost more",title:"More",onclick:e=>openMenu(e.currentTarget, rowMenu(a, busy))},"⋯"));
   const latest = a.latest_version
-    ? h("div",{class:"vv",title:a.latest_version}, a.latest_version, h("div",{class:"d"}, fmtDate(a.latest_date)))
+    ? h("div",{class:"vv",title:a.latest_version + (a.latest_from ? " — newest on " + (SRC_NAME[a.latest_from]||a.latest_from) : "")}, a.latest_version,
+        h("div",{class:"d"}, (a.latest_from && a.latest_from !== "curseforge" ? (SRC_NAME[a.latest_from]||a.latest_from) + " · " : "") + fmtDate(a.latest_date)))
     : h("div",{class:"vv dim"}, a.checked_at ? "no Forever file" : "—");
   const inst = a.installed_version ? h("div",{class:"vv",title:a.installed_version}, a.installed_version,
       h("div",{class:"d"}, (a.source==="github"?"GitHub · ":"") + (a.source==="wago"?"Wago · ":"") + (a.external?"changed outside the manager · ":"") + (a.manual?"manual zip · ":"") + (a.installed_release_type!=="Release"? a.installed_release_type+" · ":"") + fmtDate(a.installed_date)))
@@ -6126,7 +6391,7 @@ function addonRow(a, busy){
     h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t"}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
-    h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : a.tukui ? " · Tukui" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
+    h("td",{}, h("span",{class:"pill p-"+cls}, (a.update_version && (a.status==="update"||a.status==="update_manual") ? "Update → " + a.update_version + (a.update_from ? " · " + (SRC_NAME[a.update_from]||a.update_from) : "") : label + (a.update_from==="wago" ? " · Wago" : a.tukui ? " · Tukui" : ""))), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
   tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
@@ -6225,7 +6490,7 @@ function renderDetail(){
   const logo = d ? d.logo : (a ? a.logo : (B.results.find(r=>String(r.id)===DT.id)||{}).logo);
   const acts = [];
   if (a && a.folders.length){
-    if (a.status==="update") acts.push(h("button",{class:"btn primary",disabled:busy,onclick:()=>act("/api/update",{key:a.key})},"Update to "+(a.latest_version||"latest")));
+    if (a.status==="update") acts.push(h("button",{class:"btn primary",disabled:busy,onclick:()=>act("/api/update",{key:a.key})},"Update to "+(a.update_version||a.latest_version||"latest")));
     else acts.push(h("span",{class:"pill p-"+(STATUS[a.status]||["","unchecked"])[1]}, (STATUS[a.status]||[a.status])[0]));
   } else if (a && a.status==="awaiting") acts.push(h("span",{class:"tag warn"},"Waiting for download…"));
   else if (queue.includes(+DT.id) || sending===+DT.id) acts.push(h("button",{class:"btn primary",disabled:true},"Installing…"));
@@ -6322,7 +6587,8 @@ async function pumpQueue(){
   if (sending !== null || !queue.length || !S || S.job.running) return;
   const id = queue.shift();
   sending = id;
-  try{ await post("/api/add",{text:String(id)}); }
+  const r = B.results.find(x=>x.id===id) || {};
+  try{ await post("/api/install_best",{id: typeof id === "number" ? id : null, wago_id: r.wago_id || null}); }
   catch(e){ toast(e.message); sending = null; }
   renderBrowse();
 }
@@ -6463,6 +6729,17 @@ function renderWago(box){
         h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, r.updated ? h("span",{}, fmtDate(r.updated)) : null, h("a",{href:r.url,onclick:e=>e.stopPropagation()},"Wago ↗"), noForever(r), h("span",{class:"sp"}), btn)));
   })));
 }
+const SRC_NAME = {curseforge:"CurseForge", wago:"Wago", github:"GitHub", tukui:"tukui.org"};
+// Newest version across CurseForge, Wago (and GitHub when the addon links one), and where it comes from.
+function verLine(r){
+  if (!r.version) return null;
+  const others = (r.sources||[]).filter(x=>x !== r.version_from && x !== "github").map(x=>{
+    const v = x === "curseforge" ? r.cf_version : x === "wago" ? r.wago_version : null;
+    return v && v !== r.version ? SRC_NAME[x] + ": " + v : null; }).filter(Boolean);
+  return h("div",{class:"ver",title:"Sources: " + (r.sources||[]).map(x=>SRC_NAME[x]||x).join(", ") + (others.length ? "\n" + others.join("\n") : "")},
+    h("b",{}, r.version), h("span",{class:"dim"}, " · " + (SRC_NAME[r.version_from] || r.version_from)),
+    (r.sources||[]).length > 1 ? h("span",{class:"dim"}, "  (also on " + (r.sources||[]).filter(x=>x !== r.version_from).map(x=>SRC_NAME[x]||x).join(", ") + ")") : null);
+}
 function noForever(r){
   return r.forever === false ? h("span",{class:"tag warn",title:"No WoW Forever build is listed for this addon — it was probably made for another version of WoW and may not work."},"no Forever version") : null;
 }
@@ -6475,11 +6752,10 @@ function setMeta(text){
 }
 function renderBrowse(){
   if ($("#vBrowse").hidden) return;
-  const wagoOk = !!(S && S.config.has_wago_key && S.config.use_wago);
-  $("#srcBar").hidden = false; $("#srcWago").hidden = !wagoOk;
-  if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
+  $("#srcBar").hidden = false;
+  if (B.src === "wago") B.src = "cf";
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
-  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : B.src === "tukui" ? "ElvUI & Tukui" : "Browse CurseForge";
+  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : B.src === "tukui" ? "ElvUI & Tukui" : "Browse addons";
   $("#bcat").hidden = $("#bsort").hidden = B.src !== "cf";
   $("#acat").hidden = $("#asort").hidden = B.src !== "auras";
   $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, auction…";
@@ -6500,7 +6776,7 @@ function renderBrowse(){
     box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, B.loading ? "Searching CurseForge…" : (B.loaded ? "No WoW Forever addons match that search." : ""))));
   } else {
     box.replaceChildren(h("div",{class:"grid"}, ...B.results.map(r=>{
-      const a = managed.get(String(r.id));
+      const a = managed.get(String(r.id)) || (r.wago_id ? managed.get("wago-" + r.wago_id) : null);
       let btn;
       if (a && a.folders.length) btn = h("span",{class:"tag ok"}, a.status==="update" ? "Installed · update ready" : "Installed ✓");
       else if (a && a.status==="awaiting") btn = h("span",{class:"tag warn",title:"Finish the download on CurseForge's page — it installs by itself"},"Waiting for download…");
@@ -6516,8 +6792,9 @@ function renderBrowse(){
           h("div",{class:"t"}, r.name),
           h("div",{class:"by"}, r.authors.length ? "by "+r.authors.join(", ") : ""),
           h("div",{class:"sum"}, r.summary),
-          h("div",{class:"meta"}, h("span",{}, "⬇ "+fmtNum(r.downloads)), r.updated ? h("span",{}, fmtDate(r.updated)) : null, via, noForever(r), h("span",{class:"sp"}), btn)));
-      card.addEventListener("click", e=>{ if (!e.target.closest("button,a")) openDetail(r.id); });
+          verLine(r),
+          h("div",{class:"meta"}, r.downloads ? h("span",{}, "⬇ "+fmtNum(r.downloads)) : null, (r.version_date || r.updated) ? h("span",{}, fmtDate(r.version_date || r.updated)) : null, via, noForever(r), h("span",{class:"sp"}), btn)));
+      card.addEventListener("click", e=>{ if (!e.target.closest("button,a") && typeof r.id === "number") openDetail(r.id); });
       return card;
     })));
   }

@@ -1,4 +1,4 @@
-# Wago tab: popular addons without searching, categories and sorting.
+# Wago search API: popular addons without searching, categories and dates (UI merged into Addons in 3.11).
 import os, sys, json, time, subprocess, tempfile, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -28,32 +28,7 @@ try:
     names = [x["name"] for x in r["results"]]
     check(names == ["Questie W", "Bagnon W", "AdiBags W"] and r["hidden"] == 1, f"popular list without searching, Forever only, Wago's order: {names}")
     check(r["results"][1]["categories"] == ["Bags & Inventory"] and r["results"][0]["updated"], "categories and last release date come along")
-    with sync_playwright() as p:
-        b = p.chromium.launch(executable_path="/usr/bin/google-chrome", args=["--no-proxy-server"])
-        pg = b.new_page(viewport={"width": 1400, "height": 900}); errs = []
-        pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.goto(B + "/"); time.sleep(1.2)
-        pg.click("button.tab[data-v='browse']"); time.sleep(0.8)
-        pg.click(".srcsw button[data-src='wago']"); time.sleep(1.5)
-        t = pg.inner_text("#bres")
-        check("Questie W" in t and "Bagnon W" in t and "Retail W" not in t, "Wago tab shows addons straight away")
-        check(pg.locator("#wcat").is_visible() and pg.locator("#wsort").is_visible() and not pg.locator("#bcat").is_visible(), "Wago has its own category and sort menus")
-        pg.select_option("#wcat", "Bags & Inventory"); time.sleep(0.4)
-        t = pg.inner_text("#bres")
-        check("Bagnon W" in t and "AdiBags W" in t and "Questie W" not in t, "category filter works")
-        pg.select_option("#wsort", "name"); time.sleep(0.3)
-        order = pg.locator("#bres .res .t").all_inner_texts()
-        check(order == ["AdiBags W", "Bagnon W"], f"sort by name: {order}")
-        check("in Bags & Inventory" in pg.inner_text("#bmeta"), "meta line: " + pg.inner_text("#bmeta"))
-        pg.screenshot(path="/home/claude/shots/v45-wago.png")
-        pg.select_option("#wcat", ""); pg.fill("#bq", "questie"); time.sleep(1.5)
-        check(pg.locator("#bres .res").count() == 1, "typing still searches")
-        pg.fill("#bq", ""); time.sleep(1.5)
-        check(pg.locator("#bres .res").count() == 3, "clearing the box brings the popular list back")
-        pg.click(".srcsw button[data-src='cf']"); time.sleep(1.2)
-        check(pg.locator("#bcat").is_visible() and not pg.locator("#wcat").is_visible(), "CurseForge menus come back on the CurseForge tab")
-        check(not errs, f"no page errors {errs}")
-        b.close()
+    # (the separate Wago tab was merged into the one Addons search in 3.11 — see test_v49)
     fake_cf.WAGO_NO_POPULAR = True; import importlib
     r = post("/api/wago_search", {"q": "x"})   # one letter: nothing yet
     check(r.get("results") == [], "one letter waits for more")
