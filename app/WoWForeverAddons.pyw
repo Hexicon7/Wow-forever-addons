@@ -59,9 +59,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.10.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
+TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
 WAGO_DATA = os.environ.get("WFAM_WAGO_DATA", "https://data.wago.io").rstrip("/")   # wago.io (WeakAuras)
 COMPANION_FOLDER = "ForeverAurasCompanion"     # ForeverAuras picks up auras waiting to be imported from here
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -172,6 +173,18 @@ WAGO_KEY_PREFIX = "wago-"      # addons that are only on Wago are stored under "
 
 def is_wago_key(key: str) -> bool:
     return str(key).startswith(WAGO_KEY_PREFIX)
+
+
+TUKUI_KEY_PREFIX = "tukui-"     # ElvUI / Tukui from tukui.org: "tukui-elvui", "tukui-tukui"
+
+
+def is_tukui_key(key: str) -> bool:
+    return str(key).startswith(TUKUI_KEY_PREFIX)
+
+
+def own_source_key(key: str) -> bool:
+    """Addons that don't come from CurseForge at all (their data isn't CurseForge's)."""
+    return is_wago_key(key) or is_tukui_key(key)
 
 
 def wago_key(wago_id: str) -> str:
@@ -962,6 +975,64 @@ class GitHub:
         if digest.startswith("sha256:") and digest[7:].lower() != h256.hexdigest():
             raise UserError("the GitHub download was corrupted (checksum mismatch)")
         return h1.hexdigest()
+
+
+class TukuiOrg:
+    """tukui.org's public addon API (ElvUI and Tukui). No key."""
+    _cache: dict = {}
+
+    @staticmethod
+    def _host_ok(url: str) -> bool:
+        u = urllib.parse.urlparse(url)
+        host = (u.hostname or "").lower()
+        own = (urllib.parse.urlparse(TUKUI_API).hostname or "").lower()
+        if host == own and u.scheme in ("https", urllib.parse.urlparse(TUKUI_API).scheme):
+            return True
+        return u.scheme == "https" and (host == "tukui.org" or host.endswith(".tukui.org") or host in (
+            "github.com", "codeload.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"))
+
+    def _get(self, path: str):
+        try:
+            code, _h, body = http_call("GET", TUKUI_API + path, {"Accept": "application/json", "User-Agent": USER_AGENT},
+                                       timeout=30, max_bytes=4 << 20)
+        except NetError as e:
+            raise UserError(f"couldn't reach tukui.org ({e.reason})")
+        if code != 200:
+            raise UserError(f"tukui.org returned HTTP {code}")
+        try:
+            return json.loads(body.decode("utf-8"))
+        except ValueError:
+            raise UserError("tukui.org sent something that isn't JSON")
+
+    def addons(self) -> list[dict]:
+        hit = TukuiOrg._cache.get("all")
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        r = self._get("/addons")
+        data = r if isinstance(r, list) else (r.get("data") or r.get("addons") or [] if isinstance(r, dict) else [])
+        data = [a for a in data if isinstance(a, dict) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(a.get("slug") or ""))]
+        for a in data:
+            a["slug"] = str(a["slug"]).lower()
+        TukuiOrg._cache["all"] = (time.time(), data)
+        return data
+
+    def addon(self, slug: str) -> dict:
+        for a in self.addons():
+            if a["slug"] == slug:
+                return a
+        raise UserError(f"tukui.org doesn't list “{slug}”")
+
+    def download(self, url: str, dest: Path) -> str:
+        if not url or not self._host_ok(url):
+            raise UserError("tukui.org gave a download link outside tukui.org/GitHub — not downloading it")
+        h = hashlib.sha1()
+        try:
+            code, _h, _b = http_call("GET", url, {"User-Agent": USER_AGENT}, dest=dest, hashers=(h,), timeout=120)
+        except NetError as e:
+            raise UserError(f"download from tukui.org failed ({e.reason})")
+        if code != 200:
+            raise UserError(f"tukui.org download returned HTTP {code}")
+        return h.hexdigest()
 
 
 # Wago's WeakAuras categories that exist for ForeverAuras (id -> name), from wago.io's own category list.
@@ -1889,7 +1960,7 @@ class Store:
         out = {k: v for k, v in self.state.items() if k not in ("addons", "recognized", "fp_query")}
         addons = {}
         for key, r in self.state["addons"].items():
-            if is_wago_key(key):      # nothing from CurseForge in these
+            if own_source_key(key):      # nothing from CurseForge in these
                 d = {k: v for k, v in r.items() if k not in ("latest_checked_at", "awaiting")}
                 addons[key] = d
                 continue
@@ -2636,6 +2707,11 @@ class Manager:
             body = GitHub().release(rec["github"], gl["release_id"]).get("body") or ""
             return {"title": f"{rec['name']} {gl.get('name')}", "text": body.strip() or "(no release notes)",
                     "url": gl.get("url")}
+        if is_tukui_key(key):
+            tl = rec.get("tukui_latest") or {}
+            return {"title": f"{rec['name']} {tl.get('version') or rec.get('installed_version') or ''}",
+                    "text": "Tukui.org keeps the changelog on its own page.",
+                    "url": tl.get("changelog_url") or rec.get("url")}
         if is_wago_key(key):
             wl = rec.get("wago_latest") or {}
             return {"title": f"{rec['name']} {wl.get('label') or rec.get('installed_version') or ''}",
@@ -2947,6 +3023,10 @@ class Manager:
     def export_list(self) -> dict:
         items = []
         for k, r in sorted(self.store.addons.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
+            if is_tukui_key(k):
+                items.append({"tukui": k[len(TUKUI_KEY_PREFIX):], "name": r.get("name"), "source": "tukui",
+                              "version": r.get("installed_version"), "pinned": bool(r.get("pinned")), "url": r.get("url")})
+                continue
             if is_wago_key(k):
                 items.append({"wago": (r.get("wago") or {}).get("id"), "name": r.get("name"), "source": "wago",
                               "version": r.get("installed_version"), "pinned": bool(r.get("pinned")), "url": r.get("url")})
@@ -2962,7 +3042,9 @@ class Manager:
         """The whole list as one line of text, to paste in Discord or into the app on another PC."""
         items = []
         for k, r in sorted(self.store.addons.items(), key=lambda kv: (kv[1].get("name") or "").lower()):
-            if is_wago_key(k):
+            if is_tukui_key(k):
+                items.append("t:" + k[len(TUKUI_KEY_PREFIX):])
+            elif is_wago_key(k):
                 if (r.get("wago") or {}).get("id"):
                     items.append("w:" + str(r["wago"]["id"]))
             else:
@@ -2985,6 +3067,8 @@ class Manager:
         for it in data[:2000]:
             if isinstance(it, str) and it.startswith("w:"):
                 out.append({"wago": it[2:], "name": it[2:]})
+            elif isinstance(it, str) and it.startswith("t:"):
+                out.append({"tukui": it[2:], "name": it[2:]})
             elif isinstance(it, int):
                 out.append({"id": it})
             elif isinstance(it, list) and it and all(isinstance(x, int) for x in it):
@@ -3004,9 +3088,16 @@ class Manager:
                 if allow_links and text and not text.startswith(("{", "[")):
                     return self.op_add(text)          # a plain list of links or names
                 raise UserError("That isn't an addon list exported by this app.")
-        refs, wago_ids = [], []
+        refs, wago_ids, tukui_slugs = [], [], []
         for it in items:
             if not isinstance(it, dict):
+                continue
+            if it.get("tukui"):
+                slug = str(it["tukui"]).lower()
+                key = TUKUI_KEY_PREFIX + slug
+                if re.fullmatch(r"[a-z0-9_-]{1,40}", slug) and not (key in self.store.addons
+                                                                     and self._folders_present(self.store.addons[key])):
+                    tukui_slugs.append(slug)
                 continue
             if it.get("wago"):
                 wid = str(it["wago"])
@@ -3022,12 +3113,17 @@ class Manager:
                 continue
             fid = it.get("file_id") if it.get("pinned") else None
             refs.append({"kind": "id", "id": mid, "file": int(fid) if fid else None, "raw": it.get("name") or str(mid)})
-        if not refs and not wago_ids:
+        if not refs and not wago_ids and not tukui_slugs:
             self.log("Everything in that list is already installed.", "ok")
             return
-        self.log(f"Importing {len(refs) + len(wago_ids)} addon(s)…")
+        self.log(f"Importing {len(refs) + len(wago_ids) + len(tukui_slugs)} addon(s)…")
         if refs:
             self._add_refs(refs)
+        for slug in tukui_slugs:
+            try:
+                self.op_add_tukui(slug)
+            except UserError as e:
+                self.log(f"{slug}: {e}", "error")
         if wago_ids and not self.wago():
             self.log(f"{len(wago_ids)} addon(s) in the list are only on Wago — add your Wago key in Settings "
                      f"and import again to get them.", "warn")
@@ -3093,8 +3189,16 @@ class Manager:
 
     def update_source(self, rec: dict) -> str | None:
         """Where the newest version comes from: 'wago', 'curseforge', 'github' or None."""
-        wago_new = self._wago_newer(rec)
         src = rec.get("source") or "curseforge"
+        if src == "tukui":
+            tl, inst = (rec.get("tukui_latest") or {}).get("version"), rec.get("installed_version")
+            if not tl or not inst:
+                return None
+            c = version_cmp(tl, inst)
+            if c is not None:
+                return "tukui" if c > 0 else None
+            return "tukui" if norm_version(tl) != norm_version(inst) else None
+        wago_new = self._wago_newer(rec)
         if src == "github":
             li = (rec.get("gh_latest") or {}).get("release_id")
             ii = (rec.get("gh_installed") or {}).get("release_id")
@@ -3193,7 +3297,7 @@ class Manager:
         if not wg:
             return
         try:
-            todo = [k for k, r in recs.items() if not r.get("wago")
+            todo = [k for k, r in recs.items() if not r.get("wago") and str(k).isdigit()
                     and time.time() - float(r.get("wago_tried_at") or 0) > 7 * 86400]
             slugs = {}
             if todo:
@@ -3309,6 +3413,106 @@ class Manager:
                 raise UserError("no WoW Forever release on Wago right now.")
             rec["wago_latest"] = rel
         self._install_from_wago({"id": key, "name": rec.get("name") or key}, rec, rel, rec.get("pinned", False))
+
+    # -- ElvUI / Tukui from tukui.org ------------------------------------------- #
+    def tukui_list(self) -> list[dict]:
+        out = []
+        for a in TukuiOrg().addons():
+            key = TUKUI_KEY_PREFIX + a["slug"]
+            rec = self.store.addons.get(key)
+            out.append({"slug": a["slug"], "key": key, "name": a.get("name") or a["slug"], "author": a.get("author") or "",
+                        "version": str(a.get("version") or ""), "date": a.get("last_update") or "",
+                        "summary": a.get("small_desc") or "", "logo": a.get("logo_square_url") or a.get("logo_url") or "",
+                        "url": a.get("web_url") or "https://tukui.org", "patch": str(a.get("patch") or ""),
+                        "installed": bool(rec and self._folders_present(rec)),
+                        "installed_version": (rec or {}).get("installed_version"),
+                        "no_forever": a["slug"] in (self.store.state.get("tukui_no_forever") or {})})
+        return out
+
+    def op_add_tukui(self, slug: str):
+        slug = str(slug or "").lower()
+        info = TukuiOrg().addon(slug)
+        key = TUKUI_KEY_PREFIX + slug
+        name = info.get("name") or slug
+        self.backup_wtf()
+        with self.store.lock:
+            rec = self.store.addons.get(key)
+            new = rec is None
+            if new:
+                rec = {}
+            rec.update({"name": name, "slug": slug, "url": info.get("web_url") or "https://tukui.org",
+                        "summary": info.get("small_desc") or "", "authors": [info["author"]] if info.get("author") else [],
+                        "logo": info.get("logo_square_url") or info.get("logo_url") or "", "source": "tukui",
+                        "tukui_latest": self._tukui_latest(info), "latest_checked_at": time.time()})
+        try:
+            self._install_from_tukui(key, rec, info)
+        except UserError:
+            raise
+        if new:
+            with self.store.lock:
+                self.store.addons[key] = rec
+                self.store.save_state()
+
+    @staticmethod
+    def _tukui_latest(info: dict) -> dict:
+        return {"version": str(info.get("version") or ""), "url": info.get("url") or "",
+                "date": info.get("last_update") or "", "changelog_url": info.get("changelog_url") or ""}
+
+    def _install_from_tukui(self, key: str, rec: dict, info: dict, pinned: bool = False):
+        addons_dir = self.addons_dir()
+        wanted = str(self.store.config.get("interface") or DEFAULT_INTERFACE)
+        name, ver = info.get("name") or key, str(info.get("version") or "")
+        self.log(f"Downloading {name} {ver} from tukui.org…")
+        tmp_dir = Path(tempfile.mkdtemp(prefix="wfam-tukui-", dir=self.store.dir))
+        try:
+            zp = tmp_dir / "addon.zip"
+            digest = TukuiOrg().download(info.get("url") or "", zp)
+            if not zip_supports_interface(zp, wanted):
+                with self.store.lock:
+                    self.store.state.setdefault("tukui_no_forever", {})[info.get("slug") or key] = ver
+                raise UserError(f"{name} {ver} isn't built for WoW Forever yet (interface {wanted}) — nothing was changed")
+            with self.store.lock:
+                (self.store.state.get("tukui_no_forever") or {}).pop(info.get("slug") or "", None)
+            owners = self._owners(exclude_key=key)
+            prev = self._archive_current(key, rec, digest) if rec.get("folders") else None
+            analysis = install_zip_into(addons_dir, zp, rec.get("folders") or [], set(owners))
+            if prev:
+                self._push_previous(key, rec, prev)
+        finally:
+            rmtree(tmp_dir)
+        with self.store.lock:
+            rec.update({
+                "folders": analysis["folders"],
+                "primary": pick_primary(analysis["folders"], analysis["toc_folders"], rec.get("slug", ""), name),
+                "installed_file_id": None, "installed_version": ver, "installed_file_name": None,
+                "installed_file_date": info.get("last_update"), "installed_release_type": 1,
+                "installed_sha1": digest, "installed_at": now_iso(), "manual": False, "pinned": pinned,
+                "source": "tukui", "tukui_latest": self._tukui_latest(info),
+            })
+            rec.pop("awaiting", None)
+            self.store.save_state()
+        n = len(analysis["folders"])
+        self.log(f"Installed {name} {ver} from tukui.org ({n} folder{'s' if n != 1 else ''}).", "ok")
+
+    def _check_tukui(self, recs: dict):
+        keys = [k for k in recs if is_tukui_key(k)]
+        if not keys:
+            return
+        try:
+            infos = {a["slug"]: a for a in TukuiOrg().addons()}
+        except UserError as e:
+            self.log(f"Couldn't check ElvUI/Tukui: {e}", "warn")
+            return
+        with self.store.lock:
+            for k in keys:
+                info = infos.get(k[len(TUKUI_KEY_PREFIX):])
+                if info:
+                    recs[k]["tukui_latest"] = self._tukui_latest(info)
+                    recs[k]["latest_checked_at"] = time.time()
+
+    def _update_tukui(self, key: str, rec: dict):
+        info = TukuiOrg().addon(key[len(TUKUI_KEY_PREFIX):])
+        self._install_from_tukui(key, rec, info, rec.get("pinned", False))
 
     # -- ForeverAuras (WeakAuras for WoW Forever) from wago.io ------------------ #
     def aura_search(self, q: str, category: str, sort: str, page: int) -> dict:
@@ -3852,8 +4056,8 @@ class Manager:
             done = [k for k in ready if k in recs and self.status_of(recs[k]) != "update"
                     and (recs[k].get("installed_file_id"), recs[k].get("installed_version")) != before[k]]
             failed = [k for k in ready if k not in done]
-            if done:
-                self.notify(plural(len(done), "addon") + " updated", names(done))
+            if done and report_nothing:     # you asked (tray): say what happened. Otherwise stay quiet —
+                self.notify(plural(len(done), "addon") + " updated", names(done))   # the window shows "✓ N updated"
             if failed:
                 self.notify("Some updates didn't install", names(failed) + " — open the manager for details.")
             self._last_available = ()
@@ -3880,7 +4084,7 @@ class Manager:
         if not recs:
             self.log("No managed addons yet — paste some CurseForge links first.")
             return
-        ids = [int(k) for k in recs if not is_wago_key(k)]
+        ids = [int(k) for k in recs if str(k).isdigit()]
         mods: dict[int, dict] = {}
         for c in chunks(ids, 50):
             for m in cf.mods(c):
@@ -3949,6 +4153,7 @@ class Manager:
                 self._set_latest_github(r)
         self.store.save_state()
         self._check_wago(recs, channel)
+        self._check_tukui(recs)
         self.store.save_state()
         try:
             self._reconcile_local(cf, recs)
@@ -4024,7 +4229,7 @@ class Manager:
         self.backup_wtf()
         # One request for all the addons' details and one for all their files…
         mods: dict[str, dict] = {}
-        for c in chunks([int(k) for k in targets if not is_wago_key(k)], 50):
+        for c in chunks([int(k) for k in targets if str(k).isdigit()], 50):
             for m in cf.mods(c):
                 mods[str(m["id"])] = m
         want: dict[str, int] = {}
@@ -4074,6 +4279,9 @@ class Manager:
                 try:
                     if is_wago_key(key):
                         self._update_wago_only(key, rec)
+                        continue
+                    if is_tukui_key(key):
+                        self._update_tukui(key, rec)
                         continue
                     mod = mods.get(key) or cf.mod(int(key))
                     if self.update_source(rec) == "wago" and self.status_of(rec) != "missing":
@@ -4320,7 +4528,7 @@ class Manager:
         if not rec.get("folders"):
             return "manual" if rec.get("distribution_disabled") else "not_installed"
         if not self._folders_present(rec):
-            return "manual" if rec.get("distribution_disabled") and rec.get("source") not in ("github", "wago") else "missing"
+            return "manual" if rec.get("distribution_disabled") and rec.get("source") not in ("github", "wago", "tukui") else "missing"
         if rec.get("pinned"):
             return "pinned"
         src = self.update_source(rec)
@@ -4376,10 +4584,12 @@ class Manager:
                 "installed_file_id": r.get("installed_file_id"),
                 "installed_date": r.get("installed_file_date"), "installed_at": r.get("installed_at"),
                 "installed_release_type": RELEASE_TYPES.get(r.get("installed_release_type") or 1),
-                "latest_version": (r.get("wago_latest") or {}).get("label") if is_wago_key(k) else r.get("latest_version"),
+                "latest_version": (r.get("wago_latest") or {}).get("label") if is_wago_key(k)
+                else (r.get("tukui_latest") or {}).get("version") if is_tukui_key(k) else r.get("latest_version"),
                 "latest_file_id": r.get("latest_file_id"),
-                "latest_date": (r.get("wago_latest") or {}).get("created_at") if is_wago_key(k) else r.get("latest_date"),
-                "checked_at": r.get("latest_checked_at"), "wago_only": is_wago_key(k),
+                "latest_date": (r.get("wago_latest") or {}).get("created_at") if is_wago_key(k)
+                else (r.get("tukui_latest") or {}).get("date") if is_tukui_key(k) else r.get("latest_date"),
+                "checked_at": r.get("latest_checked_at"), "wago_only": is_wago_key(k), "tukui": is_tukui_key(k),
                 "latest_url": f"{r.get('url')}/files/{r['latest_file_id']}" if r.get("latest_file_id") else r.get("url"),
                 "source": r.get("source") or "curseforge", "github": r.get("github"),
                 "update_from": self.update_source(r) if self.status_of(r) in ("update", "update_manual") else None,
@@ -4771,6 +4981,11 @@ class App:
             return {"ok": True}
         if path == "/api/share_code":
             return {"code": m.share_code(), "count": len(m.store.addons)}
+        if path == "/api/tukui_list":
+            return {"results": m.tukui_list()}
+        if path == "/api/add_tukui":
+            m.run_job("Installing from tukui.org", m.op_add_tukui, str(body.get("slug") or ""))
+            return {"ok": True}
         if path == "/api/aura_search":
             return m.aura_search(str(body.get("q") or ""), str(body.get("category") or ""),
                                  str(body.get("sort") or "installs"), int(body.get("page") or 0))
@@ -5463,6 +5678,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       <h1 id="vTitle">My addons</h1><span class="sub" id="vSub"></span>
       <span class="sp"></span>
       <button class="btn" id="bCheck"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
+      <button class="btn ghost" id="bLast" hidden title="What the last update changed (and Undo)"></button>
       <button class="btn primary" id="bUpdAll">Update all</button>
     </div>
     <div class="banner" id="gameWarn" hidden>⚠ WoW is running. Changes take effect after <b>/reload</b> or restarting the game, and Windows may refuse to replace files the game has open.</div>
@@ -5488,7 +5704,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       </div>
 
       <div id="vBrowse" class="view" hidden>
-        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="tukui">ElvUI &amp; Tukui</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
@@ -5910,21 +6126,21 @@ function addonRow(a, busy){
     h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t"}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
-    h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
+    h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : a.tukui ? " · Tukui" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
-  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only) openDetail(a.key); });
+  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
   return tr;
 }
 function rowMenu(a, busy){
   return [
-    a.wago_only ? null : {label:"Details…", run:()=>openDetail(a.key)},
+    a.wago_only || a.tukui ? null : {label:"Details…", run:()=>openDetail(a.key)},
     a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
     {label:"Install from a zip…", disabled:busy, run:()=>pickZip(a.key)},
-    a.url ? {label: a.wago_only ? "Open on Wago ↗" : "Open on CurseForge ↗", href:a.url} : null,
+    a.url ? {label: a.wago_only ? "Open on Wago ↗" : a.tukui ? "Open on tukui.org ↗" : "Open on CurseForge ↗", href:a.url} : null,
     a.wago_url && !a.wago_only ? {label:"Open on Wago ↗", href:a.wago_url} : null,
     "-",
     {label:"Remove", danger:true, disabled:busy, run:async ()=>{ if (await ask(`Remove ${a.name}?`, a.folders.length ? `These folders will be deleted from AddOns:\n${a.folders.join("\n")}` : "It will no longer be tracked.", "Remove")) act("/api/remove",{key:a.key}); }},
@@ -5946,12 +6162,15 @@ function renderSelfUpdate(){
 }
 // ---------- what the last update changed ----------
 let batchSeen = null;
+// The summary never pops up by itself: a small "✓ N updated" button next to Update all opens it.
 function checkBatch(){
-  const b = S.last_batch, at = b ? b.at : "";
-  if (batchSeen === null){ batchSeen = at; return; }   // don't pop up old news when the page opens
-  if (at && at !== batchSeen && !S.job.running){ batchSeen = at; showBatch(); }
-  if (!at) batchSeen = "";
+  const b = S.last_batch, btn = $("#bLast");
+  btn.hidden = !(b && b.items && b.items.length);
+  if (btn.hidden) return;
+  const fresh = Date.now() - new Date(b.at).getTime() < 24*3600*1000;
+  btn.textContent = "✓ " + b.items.length + " updated" + (fresh ? "" : " · " + new Date(b.at).toLocaleDateString());
 }
+$("#bLast").onclick = ()=>showBatch();
 function showBatch(){
   const b = S.last_batch; if (!b) return;
   $("#btT").textContent = b.items.length === 1 ? "1 addon updated" : b.items.length + " addons updated";
@@ -6068,6 +6287,7 @@ let sending = null;
 async function bSearch(append){
   if (B.src === "wago") return wSearch();
   if (B.src === "auras") return aSearch(append);
+  if (B.src === "tukui") return tSearch();
   if (B.loading && append) return;
   const my = ++B.seq;
   B.loading = true; B.error = "";
@@ -6113,6 +6333,36 @@ async function wSearch(){
   try{ const r = await post("/api/wago_search",{q:B.q, all:B.all}); if (my !== B.seq) return; B.results = r.results; B.hidden = r.hidden || 0; B.total = r.results.length; B.loaded = true; }
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
+}
+// ---------- ElvUI & Tukui from tukui.org ----------
+const TK = {results:[], loading:false, loaded:false, error:"", seq:0};
+async function tSearch(){
+  const my = ++TK.seq; TK.loading = true; TK.error = ""; renderBrowse();
+  try{ const r = await post("/api/tukui_list",{}); if (my !== TK.seq) return; TK.results = r.results; TK.loaded = true; }
+  catch(e){ if (my === TK.seq) TK.error = e.message; }
+  if (my === TK.seq){ TK.loading = false; renderBrowse(); }
+}
+function renderTukui(){
+  const box = $("#bres"), busy = !!(S && S.job.running), q = (B.q||"").toLowerCase();
+  const list = TK.results.filter(r => !q || (r.name + " " + r.summary).toLowerCase().includes(q));
+  $("#srcHint").textContent = "From tukui.org. Installed ones are kept up to date with your other addons (Check for updates / Update all, and in the background).";
+  setMetaPlain(TK.loaded && !TK.error ? list.length + " from tukui.org" : "");
+  $("#bmore").hidden = true;
+  if (TK.error){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"tukui.org didn't answer"), h("br"), TK.error))); return; }
+  if (!list.length){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, TK.loading ? "Loading tukui.org…" : (TK.loaded ? "Nothing matches that." : "")))); return; }
+  box.replaceChildren(h("div",{class:"grid"}, ...list.map(r=>{
+    const managed = S && S.managed.find(a=>a.key===r.key);
+    const btn = r.installed
+      ? (managed && managed.status === "update" ? h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/update",{key:r.key})},"Update to " + r.version) : h("span",{class:"tag ok"},"Installed " + (r.installed_version||"")))
+      : h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/add_tukui",{slug:r.slug})},"Install");
+    return h("div",{class:"res"}, logoEl(r.logo, r.name),
+      h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
+        h("div",{class:"sum"}, r.summary),
+        h("div",{class:"meta"}, h("span",{}, "v" + r.version.replace(/^v/i,"")), r.date ? h("span",{}, fmtDate(r.date)) : null,
+          h("a",{href:r.url},"tukui.org ↗"),
+          r.no_forever ? h("span",{class:"tag warn",title:"The last download had no WoW Forever version in it. Try again when a new version is out."},"no Forever version yet") : null,
+          h("span",{class:"sp"}), btn)));
+  })));
 }
 // ---------- WeakAuras (ForeverAuras) from wago.io ----------
 const A = {cat:"", sort:"installs", results:[], next:null, total:0, page:0, loading:false, loaded:false, error:"", seq:0, catsLoaded:false};
@@ -6229,11 +6479,12 @@ function renderBrowse(){
   $("#srcBar").hidden = false; $("#srcWago").hidden = !wagoOk;
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
-  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : "Browse CurseForge";
+  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : B.src === "tukui" ? "ElvUI & Tukui" : "Browse CurseForge";
   $("#bcat").hidden = $("#bsort").hidden = B.src !== "cf";
   $("#acat").hidden = $("#asort").hidden = B.src !== "auras";
   $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, auction…";
   if (B.src === "auras"){ $("#wsort").hidden = $("#wcat").hidden = true; renderAuras(); return; }
+  if (B.src === "tukui"){ $("#wsort").hidden = $("#wcat").hidden = true; renderTukui(); return; }
   $("#wsort").hidden = B.src !== "wago";
   if (B.src === "wago") wagoCats(); else $("#wcat").hidden = true;
   $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";

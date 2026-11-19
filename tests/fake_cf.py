@@ -119,6 +119,7 @@ def seed():
 GH = {}      # repo -> list of releases (newest first)
 LEAKY_SEARCH = False
 AURAS = {}   # wago.io WeakAuras: id -> dict
+TUKUI = {}   # tukui.org: slug -> {"info": dict, "zip": bytes}
 WAGO_NO_POPULAR = False   # True: behave like a search that ignores the game-version filter
 RAW = {}     # "owner/repo/main/path" -> bytes (raw.githubusercontent.com)
 GH_ASSETS = {}  # asset id -> bytes
@@ -152,6 +153,16 @@ WAGO = {}        # id -> addon
 WAGO_FILES = {}  # n -> bytes
 _wago_n = [0]
 WBASE = None
+
+
+def tukui_addon(slug, name, version, entries, date="2026-11-10 10:00:00"):
+    TUKUI[slug] = {"zip": make_zip(entries), "info": {
+        "id": len(TUKUI) + 1, "slug": slug, "author": "Elv & Simpy" if slug == "elvui" else "Tukz", "name": name,
+        "url": f"{BASE}/tukui/dl/{slug}.zip", "version": version, "changelog_url": f"https://tukui.org/changelog?{slug}",
+        "ticket_url": "", "git_url": "", "patch": "11.2.7, 5.5.1, 1.15.7", "last_update": date,
+        "web_url": f"https://tukui.org/elvui" if slug == "elvui" else "https://tukui.org/tukui", "donate_url": "",
+        "small_desc": f"{name} replaces the whole interface.", "screenshot_url": "", "gallery_url": "", "logo_url": "",
+        "logo_square_url": "", "directories": sorted({k.split('/')[0] for k in entries})}}
 
 
 def aura(aid, slug, name, game="forever", categories=(), installs=0, stars=0, version=1, semver="1.0.0", encoded=None, note="", user="AuraMaker", ts=1762000000):
@@ -239,6 +250,16 @@ class H(BaseHTTPRequestHandler):
             if repo not in GH:
                 return self.send_json(404, {"message": "Not Found"})
             return self.send_json(200, GH[repo])
+        if p.startswith("/tukui/"):
+            if p == "/tukui/addons":
+                return self.send_json(200, [t["info"] for t in TUKUI.values()])
+            if p.startswith("/tukui/dl/"):
+                t = TUKUI.get(p[len("/tukui/dl/"):].removesuffix(".zip"))
+                if not t:
+                    return self.send_json(404, {})
+                self.send_response(200); self.send_header("Content-Length", str(len(t["zip"]))); self.end_headers()
+                return self.wfile.write(t["zip"])
+            return self.send_json(404, {})
         if p.startswith("/wagodata/"):
             if self.headers.get("Authorization") or self.headers.get("api-key") or self.headers.get("x-api-key"):
                 return self.send_json(400, {"error": "a key was sent to wago.io"})

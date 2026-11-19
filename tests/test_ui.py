@@ -91,7 +91,7 @@ try:
       pg.click("#bUpdAll"); time.sleep(0.5)
       pg.wait_for_function("() => !document.querySelector('#bUpdAll').disabled", timeout=20000); time.sleep(1)
       check(pg.inner_text("#sUpd") == "0", "no updates left after Update all")
-      check(pg.locator("#mBatch.show").count() == 1, "update summary shown"); pg.click("#btClose")
+      check(pg.locator("#mBatch.show").count() == 0 and pg.locator("#bLast").is_visible(), "no summary popup; '✓ N updated' button shown")
 
       # manual zip for Leatrix via the row's file input
       zpath = tmp / "Leatrix_Plus-12.0.11.zip"

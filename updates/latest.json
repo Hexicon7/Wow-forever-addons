@@ -1,7 +1,7 @@
 {
-  "version": "3.9.0",
-  "file": "WoWForeverAddons-Setup-3.9.0.exe",
-  "sha256": "e3b5dd133603fbabd042422b639c36520be849c7da159469e1b5062b6a8dd08a",
-  "size": 5543424,
-  "notes": "New WeakAuras tab: ForeverAuras (WeakAuras for WoW Forever) from wago.io, with categories and sorting. \"Add to game\" puts an aura in ForeverAuras' own \"Ready to install\" list, or copy the import string. New versions are now also on the GitHub Releases page."
+  "version": "3.10.0",
+  "file": "WoWForeverAddons-Setup-3.10.0.exe",
+  "sha256": "052631f97dab0cb674d04e7948f858faa6df82045833fd648cd8e57d38616a6b",
+  "size": 5557248,
+  "notes": "New: ElvUI & Tukui tab (from tukui.org). Installed ones are kept up to date like your other addons \u2014 Check for updates, Update all and the background check all include them. Tukui itself has no WoW Forever version yet, so it's refused with a clear message instead of installing something that won't load. Changed: the \"N addons updated\" summary no longer pops up by itself \u2014 click the \"\u2713 N updated\" button next to Update all to see it (and Undo). Background updates no longer show a Windows notification either, unless something needs you."
 }

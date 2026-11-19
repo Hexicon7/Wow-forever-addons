@@ -309,6 +309,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       <h1 id="vTitle">My addons</h1><span class="sub" id="vSub"></span>
       <span class="sp"></span>
       <button class="btn" id="bCheck"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
+      <button class="btn ghost" id="bLast" hidden title="What the last update changed (and Undo)"></button>
       <button class="btn primary" id="bUpdAll">Update all</button>
     </div>
     <div class="banner" id="gameWarn" hidden>⚠ WoW is running. Changes take effect after <b>/reload</b> or restarting the game, and Windows may refuse to replace files the game has open.</div>
@@ -334,7 +335,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
       </div>
 
       <div id="vBrowse" class="view" hidden>
-        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">CurseForge</button><button data-src="wago" id="srcWago">Wago</button><button data-src="tukui">ElvUI &amp; Tukui</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
@@ -756,21 +757,21 @@ function addonRow(a, busy){
     h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t"}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
-    h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
+    h("td",{}, h("span",{class:"pill p-"+cls}, label + (a.update_from==="wago" ? " · Wago" : a.tukui ? " · Tukui" : "")), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
-  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only) openDetail(a.key); });
+  tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
   return tr;
 }
 function rowMenu(a, busy){
   return [
-    a.wago_only ? null : {label:"Details…", run:()=>openDetail(a.key)},
+    a.wago_only || a.tukui ? null : {label:"Details…", run:()=>openDetail(a.key)},
     a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
     {label:"Install from a zip…", disabled:busy, run:()=>pickZip(a.key)},
-    a.url ? {label: a.wago_only ? "Open on Wago ↗" : "Open on CurseForge ↗", href:a.url} : null,
+    a.url ? {label: a.wago_only ? "Open on Wago ↗" : a.tukui ? "Open on tukui.org ↗" : "Open on CurseForge ↗", href:a.url} : null,
     a.wago_url && !a.wago_only ? {label:"Open on Wago ↗", href:a.wago_url} : null,
     "-",
     {label:"Remove", danger:true, disabled:busy, run:async ()=>{ if (await ask(`Remove ${a.name}?`, a.folders.length ? `These folders will be deleted from AddOns:\n${a.folders.join("\n")}` : "It will no longer be tracked.", "Remove")) act("/api/remove",{key:a.key}); }},
@@ -792,12 +793,15 @@ function renderSelfUpdate(){
 }
 // ---------- what the last update changed ----------
 let batchSeen = null;
+// The summary never pops up by itself: a small "✓ N updated" button next to Update all opens it.
 function checkBatch(){
-  const b = S.last_batch, at = b ? b.at : "";
-  if (batchSeen === null){ batchSeen = at; return; }   // don't pop up old news when the page opens
-  if (at && at !== batchSeen && !S.job.running){ batchSeen = at; showBatch(); }
-  if (!at) batchSeen = "";
+  const b = S.last_batch, btn = $("#bLast");
+  btn.hidden = !(b && b.items && b.items.length);
+  if (btn.hidden) return;
+  const fresh = Date.now() - new Date(b.at).getTime() < 24*3600*1000;
+  btn.textContent = "✓ " + b.items.length + " updated" + (fresh ? "" : " · " + new Date(b.at).toLocaleDateString());
 }
+$("#bLast").onclick = ()=>showBatch();
 function showBatch(){
   const b = S.last_batch; if (!b) return;
   $("#btT").textContent = b.items.length === 1 ? "1 addon updated" : b.items.length + " addons updated";
@@ -914,6 +918,7 @@ let sending = null;
 async function bSearch(append){
   if (B.src === "wago") return wSearch();
   if (B.src === "auras") return aSearch(append);
+  if (B.src === "tukui") return tSearch();
   if (B.loading && append) return;
   const my = ++B.seq;
   B.loading = true; B.error = "";
@@ -959,6 +964,36 @@ async function wSearch(){
   try{ const r = await post("/api/wago_search",{q:B.q, all:B.all}); if (my !== B.seq) return; B.results = r.results; B.hidden = r.hidden || 0; B.total = r.results.length; B.loaded = true; }
   catch(e){ if (my === B.seq) B.error = e.message; }
   if (my === B.seq){ B.loading = false; renderBrowse(); }
+}
+// ---------- ElvUI & Tukui from tukui.org ----------
+const TK = {results:[], loading:false, loaded:false, error:"", seq:0};
+async function tSearch(){
+  const my = ++TK.seq; TK.loading = true; TK.error = ""; renderBrowse();
+  try{ const r = await post("/api/tukui_list",{}); if (my !== TK.seq) return; TK.results = r.results; TK.loaded = true; }
+  catch(e){ if (my === TK.seq) TK.error = e.message; }
+  if (my === TK.seq){ TK.loading = false; renderBrowse(); }
+}
+function renderTukui(){
+  const box = $("#bres"), busy = !!(S && S.job.running), q = (B.q||"").toLowerCase();
+  const list = TK.results.filter(r => !q || (r.name + " " + r.summary).toLowerCase().includes(q));
+  $("#srcHint").textContent = "From tukui.org. Installed ones are kept up to date with your other addons (Check for updates / Update all, and in the background).";
+  setMetaPlain(TK.loaded && !TK.error ? list.length + " from tukui.org" : "");
+  $("#bmore").hidden = true;
+  if (TK.error){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"tukui.org didn't answer"), h("br"), TK.error))); return; }
+  if (!list.length){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, TK.loading ? "Loading tukui.org…" : (TK.loaded ? "Nothing matches that." : "")))); return; }
+  box.replaceChildren(h("div",{class:"grid"}, ...list.map(r=>{
+    const managed = S && S.managed.find(a=>a.key===r.key);
+    const btn = r.installed
+      ? (managed && managed.status === "update" ? h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/update",{key:r.key})},"Update to " + r.version) : h("span",{class:"tag ok"},"Installed " + (r.installed_version||"")))
+      : h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/add_tukui",{slug:r.slug})},"Install");
+    return h("div",{class:"res"}, logoEl(r.logo, r.name),
+      h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
+        h("div",{class:"sum"}, r.summary),
+        h("div",{class:"meta"}, h("span",{}, "v" + r.version.replace(/^v/i,"")), r.date ? h("span",{}, fmtDate(r.date)) : null,
+          h("a",{href:r.url},"tukui.org ↗"),
+          r.no_forever ? h("span",{class:"tag warn",title:"The last download had no WoW Forever version in it. Try again when a new version is out."},"no Forever version yet") : null,
+          h("span",{class:"sp"}), btn)));
+  })));
 }
 // ---------- WeakAuras (ForeverAuras) from wago.io ----------
 const A = {cat:"", sort:"installs", results:[], next:null, total:0, page:0, loading:false, loaded:false, error:"", seq:0, catsLoaded:false};
@@ -1075,11 +1110,12 @@ function renderBrowse(){
   $("#srcBar").hidden = false; $("#srcWago").hidden = !wagoOk;
   if (!wagoOk && B.src === "wago"){ B.src = "cf"; }
   document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
-  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : "Browse CurseForge";
+  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : B.src === "tukui" ? "ElvUI & Tukui" : "Browse CurseForge";
   $("#bcat").hidden = $("#bsort").hidden = B.src !== "cf";
   $("#acat").hidden = $("#asort").hidden = B.src !== "auras";
   $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, auction…";
   if (B.src === "auras"){ $("#wsort").hidden = $("#wcat").hidden = true; renderAuras(); return; }
+  if (B.src === "tukui"){ $("#wsort").hidden = $("#wcat").hidden = true; renderTukui(); return; }
   $("#wsort").hidden = B.src !== "wago";
   if (B.src === "wago") wagoCats(); else $("#wcat").hidden = true;
   $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";

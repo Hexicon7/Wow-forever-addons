@@ -85,7 +85,7 @@ try:
         time.sleep(0.5)
         if rec(1001)["installed_version"] == "v12.9.0" and not get("/api/state")["job"]["running"]: break
     n = get(f"/api/notices?after={last}")
-    check(rec(1001)["installed_version"] == "v12.9.0" and any(x["title"] == "1 addon updated" for x in n["notices"]), "scheduled background check installs the update by itself")
+    check(rec(1001)["installed_version"] == "v12.9.0" and not any(x["title"] == "1 addon updated" for x in n["notices"]), "scheduled background check installs the update by itself, without a pop-up")
     post("/api/settings", {"bg_check_hours": 0}); time.sleep(0.5); idle()
     pub({"mod": 1001, "version": "v13.0.0", "entries": {"Questie/Questie.toc": T("Questie", "13.0.0")}})
     time.sleep(10)
