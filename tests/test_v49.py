@@ -66,7 +66,7 @@ try:
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.goto(B + "/"); time.sleep(1.5)
         row = pg.inner_text("tr.arow:has-text('Deadly Boss Mods')")
-        check("Update → 12.0.9 · CurseForge" in row, "status shows the new version and where from: " + row.replace("\n", " | "))
+        check("Update → 12.0.9" in row and "from CurseForge" in row, "status shows the new version and where from: " + row.replace("\n", " | "))
         pg.screenshot(path="/home/claude/shots/v49-status.png")
         pg.click("button.tab[data-v='browse']"); time.sleep(0.8)
         tabs = pg.locator(".srcsw button").all_inner_texts()

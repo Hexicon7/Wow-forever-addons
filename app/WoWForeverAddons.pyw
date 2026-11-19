@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.0"
+APP_VERSION = "3.11.1"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -5749,9 +5749,16 @@ tr.grp:hover td{color:var(--text)}
 .logo{width:38px;height:38px;border-radius:9px;background:var(--panel2);flex:none;object-fit:cover;display:grid;place-items:center;color:var(--gold);font-weight:700;border:1px solid var(--line)}
 .nm .t{font-weight:650;color:var(--text)}
 .nm .s{color:var(--dim);font-size:12px;max-width:min(60vw,820px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#managedCard th:nth-child(2),#managedCard th:nth-child(3){width:19%}
-#managedCard th:nth-child(4){width:190px}
-#managedCard th:nth-child(5){width:clamp(130px,20%,330px)}
+#managedCard th:nth-child(2){width:17%}
+#managedCard th:nth-child(3){width:16%}
+#managedCard th:nth-child(4){width:clamp(170px,21%,300px)}
+#managedCard th:nth-child(5){width:clamp(150px,11%,200px)}
+#managedCard .nm .t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#managedCard .pill{max-width:100%;min-width:0}
+#managedCard .pill .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#managedCard .from{font-size:11.5px;color:var(--dim);margin:3px 0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#q{min-width:140px;flex:1 1 140px;max-width:300px}
+#managedCard .acts{flex-wrap:nowrap}
 #managedCard table{table-layout:fixed}
 #managedCard .vv,#managedCard .nm .s{max-width:100%}
 #managedCard .nm{min-width:0}
@@ -5912,8 +5919,9 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 .lightbox.show{display:flex}
 .lightbox img{max-width:92vw;max-height:90vh;border-radius:8px}
 
-@media (max-width:1250px){.hide-s{display:none} #managedCard th:nth-child(2){width:24%}}
-@media (max-width:900px){:root{--sw:64px} .side .lbl,.side .c,.brand>div:last-child,.sfoot .path,.sfoot .ver{display:none} .tab{justify-content:center} .hide-s{display:none}}
+@media (max-width:1250px){.hide-s{display:none} #managedCard th:nth-child(2){width:18%} #managedCard th:nth-child(4){width:clamp(150px,26%,300px)} #managedCard th:nth-child(5){width:150px}}
+@media (max-width:1050px) and (min-width:901px){:root{--sw:212px} .tab{white-space:nowrap} .scroll{padding-left:18px;padding-right:18px} .top{padding-left:18px;padding-right:18px}}
+@media (max-width:900px){:root{--sw:64px} .side .lbl,.side .c,.brand>div:last-child,.sfoot .path,.sfoot .ver,#bSelfChk{display:none} .tab{justify-content:center} .hide-s{display:none}}
 </style>
 </head>
 <body>
@@ -6381,17 +6389,17 @@ function addonRow(a, busy){
   if ((a.missing_deps||[]).length) acts.push(h("button",{class:"btn small primary",disabled:busy,title:"Install what this addon needs",onclick:()=>act("/api/fix_deps",{key:a.key})},"Install missing"));
   acts.push(h("button",{class:"btn small ghost more",title:"More",onclick:e=>openMenu(e.currentTarget, rowMenu(a, busy))},"⋯"));
   const latest = a.latest_version
-    ? h("div",{class:"vv",title:a.latest_version + (a.latest_from ? " — newest on " + (SRC_NAME[a.latest_from]||a.latest_from) : "")}, a.latest_version,
+    ? h("div",{class:"vv",title:a.latest_version + (a.latest_from ? " — newest on " + (SRC_NAME[a.latest_from]||a.latest_from) : "")}, shortVer(a.latest_version),
         h("div",{class:"d"}, (a.latest_from && a.latest_from !== "curseforge" ? (SRC_NAME[a.latest_from]||a.latest_from) + " · " : "") + fmtDate(a.latest_date)))
     : h("div",{class:"vv dim"}, a.checked_at ? "no Forever file" : "—");
-  const inst = a.installed_version ? h("div",{class:"vv",title:a.installed_version}, a.installed_version,
+  const inst = a.installed_version ? h("div",{class:"vv",title:a.installed_version}, shortVer(a.installed_version),
       h("div",{class:"d"}, (a.source==="github"?"GitHub · ":"") + (a.source==="wago"?"Wago · ":"") + (a.external?"changed outside the manager · ":"") + (a.manual?"manual zip · ":"") + (a.installed_release_type!=="Release"? a.installed_release_type+" · ":"") + fmtDate(a.installed_date)))
     : h("span",{class:"dim"},"—");
   const tr = h("tr",{class:"arow"},
-    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t"}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
+    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
-    h("td",{}, h("span",{class:"pill p-"+cls}, (a.update_version && (a.status==="update"||a.status==="update_manual") ? "Update → " + a.update_version + (a.update_from ? " · " + (SRC_NAME[a.update_from]||a.update_from) : "") : label + (a.update_from==="wago" ? " · Wago" : a.tukui ? " · Tukui" : ""))), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
+    h("td",{}, ...statusCell(a, label, cls), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
       (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
   tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
@@ -6739,6 +6747,18 @@ function verLine(r){
   return h("div",{class:"ver",title:"Sources: " + (r.sources||[]).map(x=>SRC_NAME[x]||x).join(", ") + (others.length ? "\n" + others.join("\n") : "")},
     h("b",{}, r.version), h("span",{class:"dim"}, " · " + (SRC_NAME[r.version_from] || r.version_from)),
     (r.sources||[]).length > 1 ? h("span",{class:"dim"}, "  (also on " + (r.sources||[]).filter(x=>x !== r.version_from).map(x=>SRC_NAME[x]||x).join(", ") + ")") : null);
+}
+// "LayerSwap-1.14.36" -> "1.14.36": the addon's name in front of the version only takes room.
+function shortVer(v){
+  v = String(v||""); const m = v.match(/^[A-Za-z][A-Za-z0-9 '_.]*?[-_ ]+(?=v?\d)/);
+  return m && m[0].length < v.length ? v.slice(m[0].length) : v;
+}
+function statusCell(a, label, cls){
+  const upd = a.update_version && (a.status==="update"||a.status==="update_manual");
+  const text = upd ? "Update → " + shortVer(a.update_version) : label;
+  const from = upd && a.update_from ? "from " + (SRC_NAME[a.update_from]||a.update_from) : (a.tukui ? "tukui.org" : "");
+  const tip = upd ? "Update to " + a.update_version + (a.update_from ? " from " + (SRC_NAME[a.update_from]||a.update_from) : "") : label;
+  return [h("span",{class:"pill p-"+cls,title:tip}, h("span",{class:"tx"}, text)), from ? h("div",{class:"from"}, from) : null];
 }
 function noForever(r){
   return r.forever === false ? h("span",{class:"tag warn",title:"No WoW Forever build is listed for this addon — it was probably made for another version of WoW and may not work."},"no Forever version") : null;

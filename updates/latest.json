@@ -1,7 +1,7 @@
 {
-  "version": "3.11.0",
-  "file": "WoWForeverAddons-Setup-3.11.0.exe",
-  "sha256": "ab2740b39c16c2078c63242c091e821f1e59d7da50832cf61717f9fcf4e27d46",
-  "size": 5573632,
-  "notes": "One search for all addons: the separate CurseForge and Wago tabs are now one Addons tab. Each addon shows up once, with the newest version among CurseForge, Wago and GitHub, and Install takes it from there. Addons only on Wago are in the same list. My addons: the status now says which version an update brings and from where (for example \"Update \u2192 12.0.9 \u00b7 CurseForge\"), and Latest shows the newest version on any site. GitHub counts as a third source for addons that link a GitHub repo."
+  "version": "3.11.1",
+  "file": "WoWForeverAddons-Setup-3.11.1.exe",
+  "sha256": "69f7a32a1ee49d6c7f188f5d58485c2a7f07e41af762c14454bcd398f23000fa",
+  "size": 5574656,
+  "notes": "Fits small and scaled windows better: long addon names stop at two lines, versions drop the repeated addon name (LayerSwap-1.14.36 \u2192 1.14.36), the status shows \"Update \u2192 version\" with \"from Wago/CurseForge/GitHub\" underneath instead of overlapping the Update button, and the toolbar no longer wraps."
 }
