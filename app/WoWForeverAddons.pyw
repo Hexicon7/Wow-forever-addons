@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.8.2"
+APP_VERSION = "3.8.3"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -101,8 +101,8 @@ DEFAULT_CONFIG = {
     # Desktop program ("WoW Forever Addons.exe") only:
     "tray": True,                 # closing the window keeps the manager running in the system tray
     "bg_check_hours": 3,          # check for updates in the background every N hours (0 = never)
-    "bg_auto_update": True,
-    "auto_self_update": True,     # update the program itself when it isn't on screen       # install the updates it finds (otherwise just show a notification)
+    "bg_auto_update": True,       # install the updates it finds (otherwise just show a notification)
+    "self_update_dismissed": "",  # program version the user chose "Later" for (not asked again)
 }
 BG_CHECK_CHOICES = (0, 1, 3, 6, 12, 24)
 SELF_UPDATE_EVERY = float(os.environ.get("WFAM_SELF_UPDATE_EVERY") or 6 * 3600)
@@ -4237,7 +4237,7 @@ class Manager:
                 "tray": cfg.get("tray", True),
                 "bg_check_hours": cfg.get("bg_check_hours", 3),
                 "bg_auto_update": cfg.get("bg_auto_update", True),
-                "auto_self_update": cfg.get("auto_self_update", True),
+                "self_update_dismissed": cfg.get("self_update_dismissed") or "",
                 "autostart": autostart_enabled(),
                 "wago_game_version": cfg.get("wago_game_version") or "forever",
                 "downloads_dir": cfg.get("downloads_dir") or "",
@@ -4398,6 +4398,8 @@ class App:
                 changes["version_type_name"] = body.get("version_type_name", "") if changes["version_type_id"] else ""
             if body.get("channel") in CHANNELS:
                 changes["channel"] = body["channel"]
+            if "self_update_dismissed" in body:
+                changes["self_update_dismissed"] = re.sub(r"[^0-9.]", "", str(body["self_update_dismissed"]))[:20]
             if "interface" in body:
                 typed = re.sub(r"[^0-9]", "", str(body["interface"]))
                 found = game_interface(changes.get("addons_dir") or m.store.config.get("addons_dir"))
@@ -4408,7 +4410,7 @@ class App:
             if "backup_keep" in body:
                 changes["backup_keep"] = max(1, min(100, int(body["backup_keep"] or 10)))
             for flag in ("auto_manual", "delete_after_install", "use_github", "backup_wtf", "auto_check", "use_wago",
-                         "app_window", "tray", "bg_auto_update", "auto_self_update"):
+                         "app_window", "tray", "bg_auto_update"):
                 if flag in body:
                     changes[flag] = bool(body[flag])
             if "backup_dir" in body and (body["backup_dir"] or "").strip() != (m.store.config.get("backup_dir") or ""):
@@ -4426,7 +4428,8 @@ class App:
                     raise UserError(f"Downloads folder not found: {d}")
                 changes["downloads_dir"] = os.path.normpath(d) if d else ""
             m.store.update_config(**changes)
-            m.log("Settings saved.", "ok")
+            if set(body) - {"self_update_dismissed"}:
+                m.log("Settings saved.", "ok")
             return {"ok": True}
         if path == "/api/test_key":
             raw_key = body.get("api_key") or m.store.config.get("api_key") or ""
@@ -4842,16 +4845,8 @@ class App:
             def self_update_loop():
                 time.sleep(min(20.0, SELF_UPDATE_EVERY))
                 while True:
-                    try:
-                        m = self.m
-                        info = m.check_self_update(notify=not m.store.config.get("auto_self_update", True))
-                        # Update by itself only while nobody is looking at the window (it restarts).
-                        if (info and m.store.config.get("auto_self_update", True)
-                                and time.time() - (getattr(m, "last_ui", 0) or 0) > 120 and not m.job["running"]):
-                            m.notify(f"Updating WoW Forever Addons to {info['version']}",
-                                     "It's back in the tray in a moment — your addons and settings stay.")
-                            time.sleep(5)
-                            m.run_job("Updating WoW Forever Addons", m.op_self_update, True)
+                    try:   # never installs by itself: it only tells you, and you choose when
+                        self.m.check_self_update(notify=True)
                     except Exception:
                         pass
                     time.sleep(SELF_UPDATE_EVERY)
@@ -5379,7 +5374,6 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
           <select id="fBgH" style="width:auto;padding:5px 8px"><option value="0">never</option><option value="1">every hour</option><option value="3">every 3 hours</option><option value="6">every 6 hours</option><option value="12">every 12 hours</option><option value="24">once a day</option></select></label>
         <label class="ck"><input type="checkbox" id="fBgUp">Install updates automatically (otherwise just notify me)</label>
         <label class="ck"><input type="checkbox" id="fAuto">Start with Windows (in the tray)</label>
-        <label class="ck"><input type="checkbox" id="fSelfUp">Update this program by itself (only while its window is closed or in the tray)</label>
         <div class="help">Background checks run while the program is open or in the tray. Right-click the tray icon to check now or quit.</div>
         <div class="help" id="selfRepo" style="margin-top:10px"></div>
       </div>
@@ -5449,9 +5443,9 @@ function h(tag, attrs, ...kids){
   for (const k of kids.flat()){ if (k === null || k === undefined || k === false) continue; e.append(k.nodeType ? k : document.createTextNode(String(k))); }
   return e;
 }
-function ask(title, body, yes, input){
+function ask(title, body, yes, input, no){
   return new Promise(res=>{
-    $("#askT").textContent=title; $("#askB").textContent=body; $("#askYes").textContent=yes||"OK";
+    $("#askT").textContent=title; $("#askB").textContent=body; $("#askYes").textContent=yes||"OK"; $("#askNo").textContent=no||"Cancel";
     const inp=$("#askIn"); inp.hidden = input===undefined; inp.value = input||"";
     const m=$("#mAsk"); m.classList.add("show");
     const done=v=>{ m.classList.remove("show"); $("#askYes").onclick=$("#askNo").onclick=m.onclick=inp.onkeydown=null; res(v); };
@@ -5681,8 +5675,10 @@ function rowMenu(a, busy){
 // ---------- updates of the program itself ----------
 function renderSelfUpdate(){
   const u = S.self_update, box = $("#selfUpd");
+  if (!u) selfOffered = "";
   box.hidden = !u;
   if (!u) return;
+  offerSelfUpdate(u);
   if (box.dataset.v === u.version + String(S.job.running)) return;
   box.dataset.v = u.version + String(S.job.running);
   box.replaceChildren(h("b",{},"Version " + u.version + " is ready"), h("button",{class:"btn small primary",disabled:S.job.running,onclick:async ()=>{
@@ -6103,7 +6099,6 @@ function openSettings(setup){
   $("#hostBox").hidden = !c.hosted; $("#winBox").hidden = !!c.hosted;
   $("#fTray").checked = c.tray !== false; $("#fBgH").value = String(c.bg_check_hours ?? 3);
   $("#fBgUp").checked = c.bg_auto_update !== false; $("#fAuto").checked = !!c.autostart;
-  $("#fSelfUp").checked = c.auto_self_update !== false;
   $("#fDl").value = c.downloads_dir || ""; $("#fDl").placeholder = c.downloads_default || "";
   $("#fBkDir").value = c.backup_dir || ""; $("#fBkDir").placeholder = c.backup_dir_default || "";
   $("#selfRepo").replaceChildren(...(c.update_repo ? ["Program updates come from ", h("a",{href:"https://github.com/"+c.update_repo}, "github.com/"+c.update_repo), " (checked every 6 hours and when you click Check for updates). ",
@@ -6146,7 +6141,7 @@ async function saveSettings(){
     backup_wtf:$("#fBk").checked, backup_keep:$("#fBkN").value, backup_dir:$("#fBkDir").value,
     use_wago:$("#fUseWago").checked, app_window:$("#fWin").checked};
   if (S.config && S.config.hosted) Object.assign(body, {tray:$("#fTray").checked, bg_check_hours:+$("#fBgH").value,
-    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked, auto_self_update:$("#fSelfUp").checked});
+    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked});
   const wk = $("#fWago").value.trim(); if (wk) body.wago_key = wk;
   const key = $("#fKey").value.trim(); if (key) body.api_key = key;
   try{ await post("/api/settings", body); closeSettings(); }
@@ -6241,6 +6236,15 @@ $("#dgClose").onclick = ()=>$("#mDiag").classList.remove("show");
 $("#dgCopy").onclick = async ()=>{ const t = diagText(); try{ await navigator.clipboard.writeText(t); $("#dgCopy").textContent="Copied ✓"; }catch(e){ const ta=h("textarea",{style:"position:fixed;opacity:0"}); ta.value=t; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); $("#dgCopy").textContent="Copied ✓"; } setTimeout(()=>$("#dgCopy").textContent="Copy report",2000); };
 $("#q").addEventListener("input", render);
 document.querySelectorAll(".stat").forEach(e=>e.onclick=()=>{ filter = (filter===e.dataset.f && filter!=="all") ? "all" : e.dataset.f; render(); });
+// A new program version is offered once (Update now / Later). It is never installed without asking.
+let selfOffered = "";
+async function offerSelfUpdate(u){
+  if (selfOffered === u.version || S.config.self_update_dismissed === u.version || S.job.running || document.querySelector(".modal.show")) return;
+  selfOffered = u.version;
+  const yes = await ask("WoW Forever Addons " + u.version + " is available", (u.notes ? u.notes.slice(0,700) + "\n\n" : "") + "Update now? The program closes, updates itself and opens again. Your addons and settings stay as they are.\n\nChoose Later to keep this version — you can update any time from the box in the menu.", "Update now", undefined, "Later");
+  if (yes) act("/api/self_update");
+  else { try{ await post("/api/settings",{self_update_dismissed:u.version}); }catch(e){} }
+}
 async function selfCheck(){
   const b = $("#bSelfChk"); b.disabled = true; b.textContent = "Checking…";
   try{

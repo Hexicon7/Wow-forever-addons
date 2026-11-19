@@ -1,4 +1,4 @@
-# Program self-update: button result, "Check for updates" also looks, automatic update only while the window is closed.
+# Program self-update: never automatic — a notification and an "Update now / Later" choice, plus a check button.
 import os, sys, json, time, subprocess, tempfile, urllib.request, hashlib, threading
 from pathlib import Path
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
@@ -36,14 +36,9 @@ def run(port, auto, ui, hosted=True, wait=6):
     out = {"logs": " | ".join(l["msg"] for l in st["logs"]), "notices": " | ".join(n["title"] for n in no["notices"]), "st": st, "post": post}
     return p, out
 p, o = run(47971, auto=True, ui=False)
-check("Updating WoW Forever Addons to 9.9.10" in o["notices"] and "installed program" in o["logs"], f"window closed: it updates by itself ({o['notices']})")
-p.terminate(); p.wait()
-p, o = run(47972, auto=True, ui=True)
-check("Updating" not in o["notices"] and "installed program" not in o["logs"] and o["st"]["self_update"]["version"] == "9.9.10", "window open: no restart, the update is offered in the menu instead")
+check("9.9.10 is available" in o["notices"] and "installed program" not in o["logs"] and "Updating" not in o["notices"],
+      f"window closed: it never updates by itself, it only tells you ({o['notices']})")
 r = o["post"]("/api/check_self_update"); check(r["update"] and r["version"] == "9.9.10" and r["current"], f"the Check button answers with versions: {r}")
-p.terminate(); p.wait()
-p, o = run(47973, auto=False, ui=False)
-check("9.9.10 is available" in o["notices"] and "installed program" not in o["logs"], "automatic update off: just a notification")
 p.terminate(); p.wait()
 from playwright.sync_api import sync_playwright
 p, o = run(47974, auto=False, ui=False, hosted=False, wait=0.5)
@@ -53,10 +48,19 @@ try:
         pg = b.new_page(viewport={"width": 1400, "height": 900}); errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.goto("http://127.0.0.1:47974/"); time.sleep(1.2)
+        check(pg.locator("#mAsk.show").count() == 0, "nothing pops up before a new version is known")
         check(pg.locator("#bSelfChk").is_visible(), "a 'Check for program update' button sits under the version number")
         pg.click("#bSelfChk"); time.sleep(1.5)
         check(pg.locator("#mAsk.show").count() == 1 and "9.9.10" in pg.inner_text("#askT"), "clicking it offers the new version: " + pg.inner_text("#askT"))
         pg.screenshot(path="/home/claude/shots/v46-selfcheck.png")
+        pg.click("#askNo"); time.sleep(0.5)
+        check(pg.locator("#mAsk.show").count() == 0 and pg.locator("#selfUpd").is_visible(), "Cancel: nothing installed, the update stays offered in the menu")
+        pg.reload(); time.sleep(2)
+        check(pg.locator("#mAsk.show").count() == 1 and "is available" in pg.inner_text("#askT") and pg.inner_text("#askNo") == "Later", "when the program opens and knows of a new version it asks once: Update now / Later")
+        pg.click("#askNo"); time.sleep(0.8); pg.reload(); time.sleep(2)
+        check(pg.locator("#mAsk.show").count() == 0 and pg.locator("#selfUpd").is_visible(), "after Later it doesn't ask again for that version, but the menu still offers it")
+        logs = " | ".join(l["msg"] for l in json.loads(urllib.request.urlopen("http://127.0.0.1:47974/api/state").read())["logs"])
+        check("installed program" not in logs and "Settings saved" not in logs, "nothing was installed and no noise in the activity log")
         check(not errs, f"no page errors {errs}")
         b.close()
 finally:

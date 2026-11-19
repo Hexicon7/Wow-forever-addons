@@ -1,7 +1,7 @@
 {
-  "version": "3.8.2",
-  "file": "WoWForeverAddons-Setup-3.8.2.exe",
-  "sha256": "4017708c7abbb8e72e76391554fb7b75b9f25c929d49fee7e5380e4d95acef74",
-  "size": 5522944,
-  "notes": "New \"Check for program update\" button under the version number. The program now updates itself while its window is closed or in the tray (can be turned off in Settings), and comes back in the tray."
+  "version": "3.8.3",
+  "file": "WoWForeverAddons-Setup-3.8.3.exe",
+  "sha256": "fe9dd463eb5c26b14ee6dca27e3b8daefb371ccc16580ce704e81b63e6fbfe7e",
+  "size": 5523456,
+  "notes": "The program never updates itself on its own any more. When a new version is out you get a notification and a choice: Update now or Later. The \"Check for program update\" button stays."
 }
