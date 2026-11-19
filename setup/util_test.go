@@ -54,6 +54,9 @@ func TestArgs(t *testing.T) {
 	if o := parseArgs([]string{"/S"}); o.uninstall || !o.quiet {
 		t.Fatal(o)
 	}
+	if o := parseArgs([]string{"/quiet", "/restart", "/tray"}); !o.tray || !o.restart {
+		t.Fatalf("tray: %+v", o)
+	}
 	if o := parseArgs([]string{"/quiet", "/restart"}); !o.quiet || !o.restart || o.uninstall {
 		t.Fatal(o)
 	}

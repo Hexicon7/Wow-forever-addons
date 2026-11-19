@@ -152,7 +152,11 @@ func install(opt options) error {
 		return fmt.Errorf("Installation failed:\n\n%v", err)
 	}
 	if !opt.quiet || opt.restart { // "/restart": the program updated itself and opens again
-		cmd := exec.Command(filepath.Join(p.dest, appExeName))
+		var args []string
+		if opt.restart && opt.tray { // updated in the background: come back in the tray, not in the user's face
+			args = append(args, "--tray")
+		}
+		cmd := exec.Command(filepath.Join(p.dest, appExeName), args...)
 		cmd.Dir = p.dest
 		if cmd.Start() != nil {
 			msgBox(appTitle+" "+appVersion+" is installed. Start it from the desktop or the Start menu.", mbIconInformation)

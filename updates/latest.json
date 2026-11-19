@@ -1,7 +1,7 @@
 {
-  "version": "3.8.1",
-  "file": "WoWForeverAddons-Setup-3.8.1.exe",
-  "sha256": "7cf451e809a39457d0deec7212c394d1dd5903bc33814694c77b84bc0a87e76c",
-  "size": 5520384,
-  "notes": "The Wago tab now shows popular addons straight away, with categories and sorting like the CurseForge tab."
+  "version": "3.8.2",
+  "file": "WoWForeverAddons-Setup-3.8.2.exe",
+  "sha256": "4017708c7abbb8e72e76391554fb7b75b9f25c929d49fee7e5380e4d95acef74",
+  "size": 5522944,
+  "notes": "New \"Check for program update\" button under the version number. The program now updates itself while its window is closed or in the tray (can be turned off in Settings), and comes back in the tray."
 }

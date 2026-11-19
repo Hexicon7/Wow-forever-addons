@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.8.1"
+APP_VERSION = "3.8.2"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 GITHUB_RAW = os.environ.get("WFAM_GITHUB_RAW", "https://raw.githubusercontent.com").rstrip("/")
@@ -101,9 +101,11 @@ DEFAULT_CONFIG = {
     # Desktop program ("WoW Forever Addons.exe") only:
     "tray": True,                 # closing the window keeps the manager running in the system tray
     "bg_check_hours": 3,          # check for updates in the background every N hours (0 = never)
-    "bg_auto_update": True,       # install the updates it finds (otherwise just show a notification)
+    "bg_auto_update": True,
+    "auto_self_update": True,     # update the program itself when it isn't on screen       # install the updates it finds (otherwise just show a notification)
 }
 BG_CHECK_CHOICES = (0, 1, 3, 6, 12, 24)
+SELF_UPDATE_EVERY = float(os.environ.get("WFAM_SELF_UPDATE_EVERY") or 6 * 3600)
 UPDATE_REPO = "Hexicon7/Wow-forever-addons"   # owner/repo on GitHub where new versions of this program are published
 
 
@@ -3504,7 +3506,15 @@ class Manager:
         r = (self.store.config.get("update_repo") or UPDATE_REPO).strip().strip("/")
         return r if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r or "") else ""
 
+    @staticmethod
+    def _quiet(fn, *args):
+        try:
+            fn(*args)
+        except Exception:
+            pass
+
     def check_self_update(self, notify: bool = True) -> dict | None:
+        self._self_checked_at = time.time()
         repo = self.update_repo()
         if not repo:
             return None
@@ -3560,7 +3570,7 @@ class Manager:
                 "asset": {"name": name, "browser_download_url": f"{base}/{name}", "digest": "sha256:" + sha,
                           "size": int(m["size"])}}
 
-    def op_self_update(self):
+    def op_self_update(self, background: bool = False):
         if os.name != "nt" or not host_exe().is_file():
             raise UserError("Updating itself works in the installed program (Windows).")
         info = self.self_update or self.check_self_update(notify=False)
@@ -3575,7 +3585,8 @@ class Manager:
                 tmp.unlink(missing_ok=True)
                 raise UserError("The downloaded update is damaged — try again later.")
         self.log("Installing the update — the program restarts in a moment.", "ok")
-        subprocess.Popen([str(tmp), "/quiet", "/restart"], cwd=str(tmp.parent), close_fds=True,
+        subprocess.Popen([str(tmp), "/quiet", "/restart"] + (["/tray"] if background else []), cwd=str(tmp.parent),
+                         close_fds=True,
                          creationflags=0x00000008 | 0x00000200)   # detached: it closes and replaces this program
 
     def notify(self, title: str, text: str):
@@ -3711,6 +3722,9 @@ class Manager:
             pass
         self.store.state["last_check"] = time.time()
         self.store.save_state()
+        if time.time() - getattr(self, "_self_checked_at", 0) > 600:   # the same button also looks for a new program version
+            self._self_checked_at = time.time()
+            threading.Thread(target=lambda: self._quiet(self.check_self_update, False), daemon=True).start()
         updates = [r["name"] + (" (Wago)" if self.update_source(r) == "wago" else "")
                    for r in recs.values() if self.status_of(r) in ("update", "update_manual")]
         if updates:
@@ -4223,6 +4237,7 @@ class Manager:
                 "tray": cfg.get("tray", True),
                 "bg_check_hours": cfg.get("bg_check_hours", 3),
                 "bg_auto_update": cfg.get("bg_auto_update", True),
+                "auto_self_update": cfg.get("auto_self_update", True),
                 "autostart": autostart_enabled(),
                 "wago_game_version": cfg.get("wago_game_version") or "forever",
                 "downloads_dir": cfg.get("downloads_dir") or "",
@@ -4393,7 +4408,7 @@ class App:
             if "backup_keep" in body:
                 changes["backup_keep"] = max(1, min(100, int(body["backup_keep"] or 10)))
             for flag in ("auto_manual", "delete_after_install", "use_github", "backup_wtf", "auto_check", "use_wago",
-                         "app_window", "tray", "bg_auto_update"):
+                         "app_window", "tray", "bg_auto_update", "auto_self_update"):
                 if flag in body:
                     changes[flag] = bool(body[flag])
             if "backup_dir" in body and (body["backup_dir"] or "").strip() != (m.store.config.get("backup_dir") or ""):
@@ -4546,7 +4561,9 @@ class App:
             m.run_job("Updating WoW Forever Addons", m.op_self_update)
             return {"ok": True}
         if path == "/api/check_self_update":
-            return {"update": m.check_self_update(notify=False) is not None}
+            info = m.check_self_update(notify=False)
+            return {"update": info is not None, "version": info["version"] if info else APP_VERSION,
+                    "current": APP_VERSION}
         if path == "/api/undo_batch":
             m.run_job("Undoing the last update", m.op_undo_batch)
             return {"ok": True}
@@ -4823,13 +4840,21 @@ class App:
         threading.Thread(target=auto_check, daemon=True).start()
         if host_pid:
             def self_update_loop():
-                time.sleep(20)
+                time.sleep(min(20.0, SELF_UPDATE_EVERY))
                 while True:
                     try:
-                        self.m.check_self_update()
+                        m = self.m
+                        info = m.check_self_update(notify=not m.store.config.get("auto_self_update", True))
+                        # Update by itself only while nobody is looking at the window (it restarts).
+                        if (info and m.store.config.get("auto_self_update", True)
+                                and time.time() - (getattr(m, "last_ui", 0) or 0) > 120 and not m.job["running"]):
+                            m.notify(f"Updating WoW Forever Addons to {info['version']}",
+                                     "It's back in the tray in a moment — your addons and settings stay.")
+                            time.sleep(5)
+                            m.run_job("Updating WoW Forever Addons", m.op_self_update, True)
                     except Exception:
                         pass
-                    time.sleep(12 * 3600)
+                    time.sleep(SELF_UPDATE_EVERY)
             threading.Thread(target=self_update_loop, daemon=True).start()
 
             def scheduler():
@@ -5177,6 +5202,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
     <div class="sfoot">
       <div class="path" id="path">—</div>
       <div class="row2"><span class="ver" id="verTxt"></span><button class="btn ghost small" id="bQuit" title="Stop the manager">Quit</button></div>
+      <button class="linkbtn" id="bSelfChk" style="margin-top:6px" title="Look for a new version of this program">Check for program update</button>
     </div>
   </aside>
 
@@ -5353,6 +5379,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
           <select id="fBgH" style="width:auto;padding:5px 8px"><option value="0">never</option><option value="1">every hour</option><option value="3">every 3 hours</option><option value="6">every 6 hours</option><option value="12">every 12 hours</option><option value="24">once a day</option></select></label>
         <label class="ck"><input type="checkbox" id="fBgUp">Install updates automatically (otherwise just notify me)</label>
         <label class="ck"><input type="checkbox" id="fAuto">Start with Windows (in the tray)</label>
+        <label class="ck"><input type="checkbox" id="fSelfUp">Update this program by itself (only while its window is closed or in the tray)</label>
         <div class="help">Background checks run while the program is open or in the tray. Right-click the tray icon to check now or quit.</div>
         <div class="help" id="selfRepo" style="margin-top:10px"></div>
       </div>
@@ -6076,9 +6103,10 @@ function openSettings(setup){
   $("#hostBox").hidden = !c.hosted; $("#winBox").hidden = !!c.hosted;
   $("#fTray").checked = c.tray !== false; $("#fBgH").value = String(c.bg_check_hours ?? 3);
   $("#fBgUp").checked = c.bg_auto_update !== false; $("#fAuto").checked = !!c.autostart;
+  $("#fSelfUp").checked = c.auto_self_update !== false;
   $("#fDl").value = c.downloads_dir || ""; $("#fDl").placeholder = c.downloads_default || "";
   $("#fBkDir").value = c.backup_dir || ""; $("#fBkDir").placeholder = c.backup_dir_default || "";
-  $("#selfRepo").replaceChildren(...(c.update_repo ? ["Program updates come from ", h("a",{href:"https://github.com/"+c.update_repo+"/releases"}, "github.com/"+c.update_repo), " (checked twice a day). ",
+  $("#selfRepo").replaceChildren(...(c.update_repo ? ["Program updates come from ", h("a",{href:"https://github.com/"+c.update_repo}, "github.com/"+c.update_repo), " (checked every 6 hours and when you click Check for updates). ",
     h("button",{class:"linkbtn",onclick:async ()=>{ try{ const r = await post("/api/check_self_update",{}); toast(r.update ? "A new version is ready — see the menu." : "You have the newest version."); }catch(e){ toast(e.message); } }},"Check now")] : []));
   $("#mSettings").classList.add("show"); $("#mSettings").scrollTop = 0;
   if (setup===true && !c.addons_dir) detect();
@@ -6118,7 +6146,7 @@ async function saveSettings(){
     backup_wtf:$("#fBk").checked, backup_keep:$("#fBkN").value, backup_dir:$("#fBkDir").value,
     use_wago:$("#fUseWago").checked, app_window:$("#fWin").checked};
   if (S.config && S.config.hosted) Object.assign(body, {tray:$("#fTray").checked, bg_check_hours:+$("#fBgH").value,
-    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked});
+    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked, auto_self_update:$("#fSelfUp").checked});
   const wk = $("#fWago").value.trim(); if (wk) body.wago_key = wk;
   const key = $("#fKey").value.trim(); if (key) body.api_key = key;
   try{ await post("/api/settings", body); closeSettings(); }
@@ -6213,6 +6241,17 @@ $("#dgClose").onclick = ()=>$("#mDiag").classList.remove("show");
 $("#dgCopy").onclick = async ()=>{ const t = diagText(); try{ await navigator.clipboard.writeText(t); $("#dgCopy").textContent="Copied ✓"; }catch(e){ const ta=h("textarea",{style:"position:fixed;opacity:0"}); ta.value=t; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); $("#dgCopy").textContent="Copied ✓"; } setTimeout(()=>$("#dgCopy").textContent="Copy report",2000); };
 $("#q").addEventListener("input", render);
 document.querySelectorAll(".stat").forEach(e=>e.onclick=()=>{ filter = (filter===e.dataset.f && filter!=="all") ? "all" : e.dataset.f; render(); });
+async function selfCheck(){
+  const b = $("#bSelfChk"); b.disabled = true; b.textContent = "Checking…";
+  try{
+    const r = await post("/api/check_self_update",{});
+    if (r.update){ await refresh(); const u = S.self_update;
+      if (u && await ask("Update WoW Forever Addons to " + u.version + "?", (u.notes ? u.notes.slice(0,700) + "\n\n" : "") + "The program closes, updates itself and opens again. Your addons and settings stay as they are.", "Update now")) act("/api/self_update"); }
+    else toast("You have the newest version (" + r.current + ").");
+  }catch(e){ toast(e.message); }
+  b.disabled = false; b.textContent = "Check for program update";
+}
+$("#bSelfChk").onclick = selfCheck;
 $("#bQuit").onclick = async ()=>{ if(!(await ask("Stop the addon manager?", "Your addons stay installed. Start it again any time from the desktop or Start menu shortcut.", "Quit"))) return; try{ await post("/api/quit",{}); }catch(e){} clearTimeout(timer); document.body.replaceChildren(h("div",{class:"empty",style:"padding-top:20vh"}, h("b",{},"The addon manager has stopped."), h("br"), "You can close this window. Start it again from the desktop or Start menu shortcut.")); };
 // keyboard: Esc closes the top-most thing, Ctrl+F searches
 document.addEventListener("keydown", e=>{

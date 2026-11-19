@@ -56,7 +56,7 @@ func lnkMentions(data []byte, marks []string) bool {
 }
 
 type options struct {
-	uninstall, quiet, relocated, restart bool
+	uninstall, quiet, relocated, restart, tray bool
 }
 
 func parseArgs(args []string) options {
@@ -71,6 +71,8 @@ func parseArgs(args []string) options {
 			o.relocated = true
 		case "restart":
 			o.restart = true
+		case "tray":
+			o.tray = true
 		}
 	}
 	return o
