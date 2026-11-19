@@ -117,6 +117,7 @@ def seed():
 
 
 GH = {}      # repo -> list of releases (newest first)
+RAW = {}     # "owner/repo/main/path" -> bytes (raw.githubusercontent.com)
 GH_ASSETS = {}  # asset id -> bytes
 _gh_id = [500]
 
@@ -228,6 +229,12 @@ class H(BaseHTTPRequestHandler):
             if repo not in GH:
                 return self.send_json(404, {"message": "Not Found"})
             return self.send_json(200, GH[repo])
+        if p.startswith("/raw/"):
+            data = RAW.get(p[5:])
+            if data is None:
+                return self.send_json(404, {"message": "404: Not Found"})
+            self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+            return self.wfile.write(data)
         if p.startswith("/ghdl/"):
             if self.headers.get("x-api-key"):
                 return self.send_json(400, {"error": "curseforge key leaked to github"})
