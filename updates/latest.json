@@ -1,7 +1,7 @@
 {
-  "version": "3.11.1",
-  "file": "WoWForeverAddons-Setup-3.11.1.exe",
-  "sha256": "69f7a32a1ee49d6c7f188f5d58485c2a7f07e41af762c14454bcd398f23000fa",
-  "size": 5574656,
-  "notes": "Fits small and scaled windows better: long addon names stop at two lines, versions drop the repeated addon name (LayerSwap-1.14.36 \u2192 1.14.36), the status shows \"Update \u2192 version\" with \"from Wago/CurseForge/GitHub\" underneath instead of overlapping the Update button, and the toolbar no longer wraps."
+  "version": "3.11.2",
+  "file": "WoWForeverAddons-Setup-3.11.2.exe",
+  "sha256": "e3e1bb7cf3a4014b0044e7053e56a1e034be2a988b13633e6407189a56b9107b",
+  "size": 5578240,
+  "notes": "The window now shows everything at a real 100 % size, also when Windows' display scaling is 125 % or 150 % (change it under Settings \u2192 Size of text and buttons). The activity panel at the bottom no longer opens by itself \u2014 click the bar to see it (it still opens when the program updates itself). The status column shows the full version instead of cutting it off, and addon cards in Browse no longer show half a line of text."
 }

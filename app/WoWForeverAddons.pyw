@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.1"
+APP_VERSION = "3.11.2"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -105,6 +105,7 @@ DEFAULT_CONFIG = {
     "tray": True,                 # closing the window keeps the manager running in the system tray
     "bg_check_hours": 3,          # check for updates in the background every N hours (0 = never)
     "bg_auto_update": True,       # install the updates it finds (otherwise just show a notification)
+    "ui_scale": "100",            # window size of text: "100" = real 100 % whatever Windows' scaling is
     "self_update_dismissed": "",  # program version the user chose "Later" for (not asked again)
 }
 BG_CHECK_CHOICES = (0, 1, 3, 6, 12, 24)
@@ -4934,6 +4935,7 @@ class Manager:
                 "bg_check_hours": cfg.get("bg_check_hours", 3),
                 "bg_auto_update": cfg.get("bg_auto_update", True),
                 "self_update_dismissed": cfg.get("self_update_dismissed") or "",
+                "ui_scale": str(cfg.get("ui_scale") or "100"),
                 "autostart": autostart_enabled(),
                 "wago_game_version": cfg.get("wago_game_version") or "forever",
                 "downloads_dir": cfg.get("downloads_dir") or "",
@@ -5099,6 +5101,11 @@ class App:
                 changes["version_type_name"] = body.get("version_type_name", "") if changes["version_type_id"] else ""
             if body.get("channel") in CHANNELS:
                 changes["channel"] = body["channel"]
+            if "ui_scale" in body:
+                v = str(body["ui_scale"])
+                if v not in ("90", "100", "110", "125", "system", "fit"):
+                    raise UserError("Unknown size.")
+                changes["ui_scale"] = v
             if "self_update_dismissed" in body:
                 changes["self_update_dismissed"] = re.sub(r"[^0-9.]", "", str(body["self_update_dismissed"]))[:20]
             if "interface" in body:
@@ -5454,6 +5461,7 @@ class App:
                     return self._send(200, {"notices": items, "last": app.m._notice_id,
                                             "ui_age": (time.time() - ui) if ui else -1,
                                             "tray": bool(app.m.store.config.get("tray", True)),
+                                            "ui_scale": str(app.m.store.config.get("ui_scale") or "100"),
                                             "busy": bool(app.m.job["running"])})
                 if url.path == "/api/ping":
                     return self._send(200, {"app": APP_NAME, "version": APP_VERSION})
@@ -5754,8 +5762,10 @@ tr.grp:hover td{color:var(--text)}
 #managedCard th:nth-child(4){width:clamp(170px,21%,300px)}
 #managedCard th:nth-child(5){width:clamp(150px,11%,200px)}
 #managedCard .nm .t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-#managedCard .pill{max-width:100%;min-width:0}
-#managedCard .pill .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#managedCard .pill{max-width:100%;min-width:0;white-space:normal;border-radius:12px;line-height:1.35;align-items:flex-start}
+#managedCard .pill::before{margin-top:5px;flex:none}
+#managedCard .pill .tx{white-space:normal;overflow-wrap:anywhere}
+#managedCard .vv{white-space:normal;overflow-wrap:anywhere;overflow:visible}
 #managedCard .from{font-size:11.5px;color:var(--dim);margin:3px 0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #q{min-width:140px;flex:1 1 140px;max-width:300px}
 #managedCard .acts{flex-wrap:nowrap}
@@ -5792,8 +5802,10 @@ tr.grp:hover td{color:var(--text)}
 .res .by{color:var(--dim);font-size:12px}
 .res .ver{font-size:12.5px;margin-top:4px;color:var(--text)}
 .res .ver b{color:var(--gold);font-weight:600}
-.res .sum{color:var(--muted);font-size:12.5px;margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex:1}
-.res .meta{color:var(--dim);font-size:11.5px;margin-top:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.res .sum{color:var(--muted);font-size:12.5px;line-height:1.4;margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-height:calc(2 * 1.4em)}
+.res .body > .sum{margin-bottom:auto}
+.res .meta{color:var(--dim);font-size:11.5px;margin-top:8px;display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap}
+.res .meta > .btn,.res .meta > .tag:last-child{margin-left:auto}
 .res .meta .sp{flex:1}
 .more{display:flex;justify-content:center;padding:16px}
 
@@ -6121,6 +6133,8 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
           <select id="fBgH" style="width:auto;padding:5px 8px"><option value="0">never</option><option value="1">every hour</option><option value="3">every 3 hours</option><option value="6">every 6 hours</option><option value="12">every 12 hours</option><option value="24">once a day</option></select></label>
         <label class="ck"><input type="checkbox" id="fBgUp">Install updates automatically (otherwise just notify me)</label>
         <label class="ck"><input type="checkbox" id="fAuto">Start with Windows (in the tray)</label>
+        <label class="ck" style="align-items:center">Size of text and buttons
+          <select id="fScale" style="width:auto;padding:5px 8px"><option value="100">100 % (recommended)</option><option value="90">90 %</option><option value="110">110 %</option><option value="125">125 %</option><option value="system">Follow Windows' display scaling</option><option value="fit">Grow with the window</option></select></label>
         <div class="help">Background checks run while the program is open or in the tray. Right-click the tray icon to check now or quit.</div>
         <div class="help" id="selfRepo" style="margin-top:10px"></div>
       </div>
@@ -6368,7 +6382,7 @@ function render(){
   const dot = $("#dDot");
   if (busy){ if (!dot.classList.contains("spin")) dot.className="spin"; }
   else dot.className = "dot " + (S.job.ok===false ? "err" : S.job.ok ? "ok" : "");
-  if (busy && !wasRunning){ setDrawer(true); }
+  if (busy && !wasRunning && /^Updating WoW Forever Addons/.test(S.job.title || "")){ setDrawer(true); }
   wasRunning = busy;
 }
 
@@ -6981,6 +6995,7 @@ function openSettings(setup){
   $("#hostBox").hidden = !c.hosted; $("#winBox").hidden = !!c.hosted;
   $("#fTray").checked = c.tray !== false; $("#fBgH").value = String(c.bg_check_hours ?? 3);
   $("#fBgUp").checked = c.bg_auto_update !== false; $("#fAuto").checked = !!c.autostart;
+  $("#fScale").value = c.ui_scale || "100";
   $("#fDl").value = c.downloads_dir || ""; $("#fDl").placeholder = c.downloads_default || "";
   $("#fBkDir").value = c.backup_dir || ""; $("#fBkDir").placeholder = c.backup_dir_default || "";
   $("#selfRepo").replaceChildren(...(c.update_repo ? ["Program updates come from ", h("a",{href:"https://github.com/"+c.update_repo}, "github.com/"+c.update_repo), " (checked every 6 hours and when you click Check for updates). ",
@@ -7023,7 +7038,7 @@ async function saveSettings(){
     backup_wtf:$("#fBk").checked, backup_keep:$("#fBkN").value, backup_dir:$("#fBkDir").value,
     use_wago:$("#fUseWago").checked, app_window:$("#fWin").checked};
   if (S.config && S.config.hosted) Object.assign(body, {tray:$("#fTray").checked, bg_check_hours:+$("#fBgH").value,
-    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked});
+    bg_auto_update:$("#fBgUp").checked, autostart:$("#fAuto").checked, ui_scale:$("#fScale").value});
   const wk = $("#fWago").value.trim(); if (wk) body.wago_key = wk;
   const key = $("#fKey").value.trim(); if (key) body.api_key = key;
   try{ await post("/api/settings", body); closeSettings(); }

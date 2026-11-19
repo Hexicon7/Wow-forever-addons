@@ -276,12 +276,16 @@ func onClose() bool {
 var (
 	zoomer              interface{ SetZoom(float64) }
 	lastZoom            float64
+	uiScale             atomic.Value // "100" (default), "90", "110", "125", "system" or "fit" — from Settings
 	procGetClientRect   = user32.NewProc("GetClientRect")
 	procGetDpiForWindow = user32.NewProc("GetDpiForWindow")
 )
 
-// fitZoom makes the program fill big windows: the wider the window, the larger everything is
-// drawn (like browser zoom, in steps of 5 %), so a maximised window on a big screen isn't mostly empty.
+const wmApplyScale = 0x8000 + 41 // WM_APP+41: the size setting changed (zoom must be set on the window's thread)
+
+// fitZoom sets how big everything is drawn. Default "100": real 100 %, whatever Windows' display
+// scaling is (at 125 % scaling the page is drawn at 0.8 so it looks like 100 %). "90"/"110"/"125":
+// that size. "system": follow Windows' scaling. "fit": grow with the window (the older behaviour).
 func fitZoom(hwnd uintptr) {
 	if zoomer == nil || hwnd == 0 {
 		return
@@ -295,13 +299,31 @@ func fitZoom(hwnd uintptr) {
 		}
 	}
 	width := float64(rc[2]-rc[0]) * 96 / float64(dpi)
-	z := width / 1650
-	if z < 1 {
+	mode, _ := uiScale.Load().(string)
+	var z float64
+	switch mode {
+	case "system":
 		z = 1
-	} else if z > 1.35 {
-		z = 1.35
+	case "fit":
+		z = width / 1650
+		if z < 1 {
+			z = 1
+		} else if z > 1.35 {
+			z = 1.35
+		}
+		z = float64(int(z*20+0.5)) / 20
+	default:
+		pct := 100.0
+		switch mode {
+		case "90":
+			pct = 90
+		case "110":
+			pct = 110
+		case "125":
+			pct = 125
+		}
+		z = pct / 100 * 96 / float64(dpi)
 	}
-	z = float64(int(z*20+0.5)) / 20
 	if z != lastZoom && width > 0 {
 		lastZoom = z
 		zoomer.SetZoom(z)
@@ -309,8 +331,11 @@ func fitZoom(hwnd uintptr) {
 }
 
 func onMessage(hwnd, msg, wp, lp uintptr) (uintptr, bool) {
-	if msg == 0x0005 && wp != 1 { // WM_SIZE (not minimised)
+	if (msg == 0x0005 && wp != 1) || msg == 0x02E0 || msg == wmApplyScale { // WM_SIZE (not minimised), WM_DPICHANGED, setting changed
 		fitZoom(hwnd)
+		if msg == wmApplyScale {
+			return 0, true
+		}
 	}
 	if wmShowMain != 0 && msg == wmShowMain { // another start of the program asked for the window
 		showMain()
@@ -334,12 +359,19 @@ func pollNotices() {
 					Title string  `json:"title"`
 					Text  string  `json:"text"`
 				} `json:"notices"`
-				Last int  `json:"last"`
-				Tray bool `json:"tray"`
-				Busy bool `json:"busy"`
+				Last  int    `json:"last"`
+				Tray  bool   `json:"tray"`
+				Busy  bool   `json:"busy"`
+				Scale string `json:"ui_scale"`
 			}
 			if json.Unmarshal(body, &r) == nil {
 				trayOn.Store(r.Tray)
+				if old, _ := uiScale.Load().(string); old != r.Scale {
+					uiScale.Store(r.Scale)
+					if h := mainHwnd; h != 0 {
+						procPostMessageW.Call(h, wmApplyScale, 0, 0)
+					}
+				}
 				busy.Store(r.Busy)
 				for _, n := range r.Notices {
 					if n.T >= started && !windowInView() {
