@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.5"
+APP_VERSION = "3.12.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -300,6 +300,12 @@ def clean_key(key: str) -> str:
     return re.sub(r"\s+", "", key or "").strip("\"'")
 
 
+def key_kind(key: str) -> str:
+    """Which site a pasted key belongs to. CurseForge keys look like "$2a$10$…" (60 characters);
+    anything else is treated as a Wago key — and each is only ever sent to its own site."""
+    return "curseforge" if key.startswith("$2") else "wago"
+
+
 def key_allowed_for(url: str) -> bool:
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
     api_host = (urllib.parse.urlsplit(API_BASE).hostname or "").lower()
@@ -432,6 +438,7 @@ def _read_toc(folder: Path) -> dict:
         "project_id": int(pid) if pid.isdigit() else None,
         "wago_id": (meta.get("x-wago-id") or "").strip() or None,
         "deps": toc_required_deps(meta),
+        "optdeps": [x.strip() for x in (meta.get("optionaldeps") or "").split(",") if x.strip()][:40],
         "default_state": "disabled" if (meta.get("defaultstate") or "").strip().lower() == "disabled" else "enabled",
         "toc": toc.name,
         "loads": loads,
@@ -439,6 +446,24 @@ def _read_toc(folder: Path) -> dict:
 
 
 _iface_cache: dict[str, tuple] = {}
+
+
+def cache_bytecode():
+    """Save this program compiled (WoWForeverAddons.pyc next to the .pyw). The desktop window starts
+    that copy when it's newer than the .pyw, so Python doesn't have to compile 7,000 lines at every start."""
+    try:
+        src = Path(__file__).resolve()
+        if src.suffix != ".pyw":
+            return
+        dst = src.with_suffix(".pyc")
+        if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+            return
+        import py_compile
+        tmp = src.with_name(dst.name + ".tmp")
+        py_compile.compile(str(src), cfile=str(tmp), doraise=True)
+        os.replace(tmp, dst)
+    except Exception:
+        pass
 
 
 def game_interface(addons_dir: str | Path | None) -> str | None:
@@ -2795,6 +2820,7 @@ class Manager:
         qhash = hashlib.sha1(f"{type_id}:{sorted(by_print)}".encode()).hexdigest()
         if qhash == self.store.state.get("fp_query") and "recognized" in self.store.state:
             found = self.store.state["recognized"]       # same folders as last time: nothing to ask
+            self._scan_wago(folders, {f for v in found.values() for f in v["folders"]})
             if not quiet:
                 self.log(f"Recognised {len(found)} addon(s) among {len(folders)} unmanaged folders (unchanged).", "ok")
             return len(found), len(folders)
@@ -2819,10 +2845,51 @@ class Manager:
             self.store.state["fp_query"] = qhash
             self.store.save_state()
         n_folders = sum(len(v["folders"]) for v in found.values())
+        n_wago = self._scan_wago(folders, {f for v in found.values() for f in v["folders"]})
         if not quiet:
-            self.log(f"Recognised {len(found)} addon(s) ({n_folders} of {len(folders)} unmanaged folders) on CurseForge.",
-                     "ok")
+            self.log(f"Recognised {len(found)} addon(s) ({n_folders} of {len(folders)} unmanaged folders) on CurseForge"
+                     + (f", {n_wago} more on Wago" if n_wago else "") + ".", "ok")
         return len(found), len(folders)
+
+    def _scan_wago(self, folders: list[Path], known: set[str]) -> int:
+        """Folders CurseForge didn't recognise: look them up on Wago by name (once per folder change)."""
+        wg = self.wago()
+        if not wg:
+            return 0
+        with self.store.lock:
+            rec = self.store.state.setdefault("wago_recognized", {})
+            seen = self.store.state.setdefault("wago_seen", {})
+        present = {f.name for f in folders}
+        for name in [n for n in list(rec) if n not in present]:
+            rec.pop(name, None)
+        asked = 0
+        for f in folders:
+            if f.name in known or f.name in rec:
+                continue
+            sig = folder_signature(f)
+            if seen.get(f.name) == sig or asked >= 15:
+                continue
+            seen[f.name] = sig
+            t = read_toc(f)
+            title = t.get("title") or f.name
+            if not t or re.match(r"^(Lib[A-Z0-9-]|Ace3\b)", f.name):
+                continue                                   # libraries come with the addons that use them
+            asked += 1
+            try:
+                hits = wg.search(title)[:10]
+                hit = next((a for a in hits if exact_name(a.get("display_name") or a.get("name"), title)
+                            or (a.get("slug") or "").lower() == f.name.lower()), None)
+                if not hit:
+                    continue
+                rel = Wago.pick_release(wg.addon(hit["id"]), self.store.config.get("channel", "release"))
+                if rel:
+                    rec[f.name] = {"id": str(hit["id"]), "name": hit.get("display_name") or hit.get("name"),
+                                   "version": rel.get("label")}
+            except UserError:
+                continue
+        with self.store.lock:
+            self.store.save_state()
+        return sum(1 for v in rec.values() if v)
 
     def op_adopt(self, mod_id: int):
         """Start managing an addon that's already installed, without downloading it again —
@@ -4367,10 +4434,15 @@ class Manager:
             if isinstance(f, Exception):
                 self.log(f"{recs[str(mid)].get('name')}: {f}", "warn")
                 continue
+            r = recs[str(mid)]
             with self.store.lock:
-                self._set_latest(recs[str(mid)], f)
-            if not f:
-                self.log(f"{recs[str(mid)].get('name')}: no WoW Forever file on the {channel} channel.", "warn")
+                self._set_latest(r, f)
+                if f:
+                    r.pop("no_cf_forever", None)
+                elif r.get("no_cf_forever") != channel:
+                    r["no_cf_forever"] = channel            # say it once, not at every check
+                    self.log(f"{r.get('name')}: CurseForge has no WoW Forever file on the {channel} channel — "
+                             f"keeping the one you have (Wago and GitHub are checked too).", "info")
         for k in gh_keys:
             r = recs[k]
             got = found.get(("gh", k))
@@ -4987,6 +5059,27 @@ class Manager:
                         g["missing_deps"].append(dep)
                 if len(p.name) < len(g["folders"][0]) and toc:
                     g["title"] = toc.get("title") or g["title"]
+            # which managed addons use a folder (## Dependencies / ## OptionalDeps): a shared library
+            used_by: dict[str, list[str]] = {}
+            for r in recs.values():
+                prim = r.get("primary") or (r.get("folders") or [None])[0]
+                if not prim:
+                    continue
+                t = read_toc(addons_dir / prim)
+                for dep in (t.get("deps") or []) + (t.get("optdeps") or []):
+                    names = used_by.setdefault(dep.lower(), [])
+                    if r.get("name") and r["name"] not in names:
+                        names.append(r["name"])
+            wrec = self.store.state.get("wago_recognized") or {}
+            for g in groups.values():
+                g["used_by"] = sorted({n for f in g["folders"] for n in used_by.get(f.lower(), [])})[:4]
+                if not g.get("recognized"):
+                    for f in g["folders"]:
+                        t = read_toc(addons_dir / f)
+                        hit = wrec.get(f) or ({"id": t["wago_id"]} if t.get("wago_id") else None)
+                        if hit:
+                            g["wago_id"], g["wago_name"], g["wago_version"] = hit["id"], hit.get("name"), hit.get("version")
+                            break
             ignored_set = set(self.store.config.get("ignored_folders") or [])
             for g in groups.values():
                 g["compat"] = compat_of(g["interfaces"], wanted) if g["loads"] else "mismatch"
@@ -5250,6 +5343,31 @@ class App:
             cats = m.client().categories()
             return {"categories": sorted(({"id": c["id"], "name": c.get("name") or str(c["id"])} for c in cats
                                           if not c.get("isClass") and c.get("name")), key=lambda c: c["name"].lower())}
+        if path == "/api/save_key":
+            # One paste box for both keys: recognise it, test it with its own site, save it if it works.
+            key = clean_key(str(body.get("key") or ""))
+            if not key:
+                raise UserError("Paste a key first.")
+            kind = key_kind(key)
+            if kind == "curseforge":
+                if len(key) < 50:
+                    return {"ok": False, "kind": kind, "message": f"That CurseForge key looks cut off "
+                            f"({len(key)} of 60 characters) — copy the whole key again."}
+                try:
+                    types = CurseForge(key).version_types()
+                except CurseForgeError as e:
+                    return {"ok": False, "kind": kind, "message": f"CurseForge didn't accept that key: {e}"}
+                m.store.update_config(api_key=key)
+                hint = " (tip: also add a Wago key to compare versions there)" if not m.store.config.get("wago_key") else ""
+                return {"ok": True, "kind": kind, "message": f"CurseForge key saved ✓ — it works ({len(types)} WoW versions found).{hint}"}
+            gv = m.store.config.get("wago_game_version") or "forever"
+            try:
+                Wago(key, gv).search("bags")
+            except UserError as e:
+                return {"ok": False, "kind": kind, "message": f"That isn't a CurseForge key (those start with $2a$10$), "
+                        f"and Wago didn't accept it either: {e}"}
+            m.store.update_config(wago_key=key, use_wago=True)
+            return {"ok": True, "kind": kind, "message": "Wago key saved ✓ — it works. Wago is now compared with CurseForge."}
         if path == "/api/test_wago":
             key = clean_key(body.get("wago_key") or m.store.config.get("wago_key") or "")
             if not key:
@@ -5672,6 +5790,10 @@ class App:
                     pass
         self.m.meta_ready = False
         threading.Thread(target=self.m.warm_meta, daemon=True).start()
+        if host_pid:
+            t = threading.Timer(float(os.environ.get("WFAM_BYTECODE_DELAY") or 20), cache_bytecode)
+            t.daemon = True
+            t.start()
         threading.Thread(target=lambda: self.m._quiet(self.m.tidy_storage), daemon=True).start()
         threading.Thread(target=auto_check, daemon=True).start()
         if host_pid:
@@ -5967,6 +6089,8 @@ tr.grp:hover td{color:var(--text)}
 .field label.ck{font-weight:500;display:flex;gap:9px;align-items:flex-start;margin-top:6px}
 .field label.ck input{width:auto;margin:3px 0 0}
 .field .help{color:var(--dim);font-size:12px;margin-top:5px}
+.setupkey input{background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:9px 11px;font:inherit}
+.setupkey input:focus{outline:none;border-color:var(--gold)}
 .field input,.field select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:9px 11px;font:inherit}
 .row{display:flex;gap:8px}
 .row>*{flex:1}
@@ -6255,7 +6379,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
         <label for="fKey">CurseForge API key</label>
         <div class="row"><input id="fKey" type="password" autocomplete="off" spellcheck="false"><button class="btn" id="bTestKey">Test key</button></div>
         <div class="help" id="keyResult" style="display:none"></div>
-        <div class="help" id="keyHelp">Stored only on this PC, in your user profile.</div>
+        <div class="help" id="keyHelp">Paste it and it's checked and saved by itself. Stored only on this PC. Get one free at <a href="https://console.curseforge.com/">console.curseforge.com</a> → API keys.</div>
       </div>
       <div class="field">
         <label for="fWago">Wago Addons key <span class="dim" style="font-weight:400">(optional — from addons.wago.io/patreon)</span></label>
@@ -6321,21 +6445,24 @@ function fmtDate(iso){ if(!iso) return ""; const d=new Date(iso); if (isNaN(d)) 
 function ago(iso){ if(!iso) return "never"; const s=(Date.now()-new Date(iso))/1000; if(s<90) return "just now"; if(s<3600) return Math.round(s/60)+" min ago"; if(s<86400) return Math.round(s/3600)+" h ago"; return Math.round(s/86400)+" d ago"; }
 function fmtNum(n){ if (n>=1e6) return (n/1e6).toFixed(n>=1e7?0:1)+"M"; if (n>=1e3) return (n/1e3).toFixed(n>=1e4?0:1)+"k"; return String(n); }
 function fmtSize(b){ if(!b) return ""; return b>=1048576 ? (b/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(b/1024))+" KB"; }
-// Icons are reused between redraws (the list is redrawn while a job runs), so they're decoded once
-// and never flicker or load again.
+// Icons in My addons are reused between redraws (that list is redrawn while a job runs), so they're
+// decoded once and don't flicker. Only that list reuses them: an image can only be in one place, and
+// Browse / the detail panel showing the same icon must not take it away from the list (or vice versa).
 const logoCache = new Map();
-function logoEl(src, name, cls){
+let logoTick = 0, logoTickQueued = false;
+function logoEl(src, name, cls, reuse){
   const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]);
   if (!src) return fb();
+  const make = ()=>h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
+    onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
+  if (!reuse) return make();
+  if (!logoTickQueued){ logoTickQueued = true; queueMicrotask(()=>{ logoTick++; logoTickQueued = false; }); }
   const key = (cls||"logo") + "|" + src;
   let img = logoCache.get(key);
   if (img && img.dataset.bad) return fb();
-  if (!img){
-    img = h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
-      onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
-    if (logoCache.size > 600) logoCache.clear();
-    logoCache.set(key, img);
-  }
+  if (img && img._tick === logoTick) return make();        // same icon twice in one redraw
+  if (!img){ img = make(); if (logoCache.size > 600) logoCache.clear(); logoCache.set(key, img); }
+  img._tick = logoTick;
   return img;
 }
 
@@ -6425,7 +6552,7 @@ function render(){
   const card = $("#managedCard");
   card.hidden = filter==="unmanaged";
   if (!c.has_key || !c.addons_dir_ok){
-    card.replaceChildren(h("div",{class:"empty"}, h("b",{},"Finish setup to start"), h("br"), "Add your CurseForge API key and pick the WoW Forever AddOns folder.", h("div",{class:"acts2"}, h("button",{class:"btn primary",onclick:()=>openSettings()},"Open settings"))));
+    card.replaceChildren(setupCard(c));
   } else if (!m.length){
     card.replaceChildren(h("div",{class:"empty"}, h("b",{},"No addons yet"), h("br"), "Find addons in Browse, or paste CurseForge links. Addons you copied into AddOns by hand are listed below.",
       h("div",{class:"acts2"}, h("button",{class:"btn primary",onclick:()=>showView("browse")},"Browse addons"), h("button",{class:"btn",onclick:openAdd},"Paste links"))));
@@ -6455,7 +6582,8 @@ function render(){
     const tb = h("tbody");
     for (const g of un){
       tb.append(h("tr",{},
-        h("td",{}, h("div",{style:"font-weight:600"}, g.title), h("div",{class:"dim",style:"font-size:12px"}, g.recognized ? (g.forever===false ? "✓ recognised on CurseForge — but this copy isn't the WoW Forever version" : "✓ recognised on CurseForge") : (g.has_toc ? g.folders.join(", ") : "no .toc file — WoW will ignore this folder"))),
+        h("td",{}, h("div",{style:"font-weight:600"}, g.title), h("div",{class:"dim",style:"font-size:12px"}, g.recognized ? (g.forever===false ? "✓ recognised on CurseForge — but this copy isn't the WoW Forever version" : "✓ recognised on CurseForge") : g.wago_id ? "✓ found on Wago" + (g.wago_version ? " (" + g.wago_version + ")" : "") : (g.has_toc ? g.folders.join(", ") : "no .toc file — WoW will ignore this folder")),
+          (g.used_by||[]).length ? h("div",{class:"dim",style:"font-size:12px"}, "Library used by " + g.used_by.join(", ")) : null),
         h("td",{}, h("span",{class:"vv"}, g.version || "—")),
         h("td",{class:"hide-s"}, g.compat==="mismatch" ? compatNote(g.interfaces, g.toc_file) : h("span",{class:"dim"}, g.interfaces.join(", ")||"—"),
           (g.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)"},"⚠ Needs: "+g.missing_deps.join(", ")) : null),
@@ -6463,6 +6591,8 @@ function render(){
           ? h("button",{class:"btn small primary",disabled:busy,title:g.forever===false?"Install the WoW Forever version and track it for updates":"Track it for updates — nothing is downloaded",onclick:()=>act("/api/adopt",{mod_id:g.project_id})}, g.forever===false ? "Install Forever version" : "Manage")
           : g.project_id
           ? h("button",{class:"btn small",disabled:busy,title:"Reinstall the WoW Forever version from CurseForge and track it for updates",onclick:()=>act("/api/manage",{project_id:g.project_id})},"Manage with updates")
+          : g.wago_id
+          ? h("button",{class:"btn small primary",disabled:busy,title:"Install it from Wago (CurseForge too if it's there — the newest wins) and keep it updated",onclick:()=>act("/api/add_wago",{id:g.wago_id})},"Manage with updates")
           : null,
           h("button",{class:"btn small ghost",title:"You look after this one yourself (e.g. Zygor): hide it here",onclick:()=>act("/api/ignore",{folders:g.folders,ignore:true})},"Hide")))
       ));
@@ -6518,7 +6648,7 @@ function addonRow(a, busy){
       h("div",{class:"d"}, (a.source==="github"?"GitHub · ":"") + (a.source==="wago"?"Wago · ":"") + (a.external?"changed outside the manager · ":"") + (a.manual?"manual zip · ":"") + (a.installed_release_type!=="Release"? a.installed_release_type+" · ":"") + fmtDate(a.installed_date)))
     : h("span",{class:"dim"},"—");
   const tr = h("tr",{class:"arow"},
-    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
+    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
     h("td",{}, ...statusCell(a, label, cls), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
@@ -6859,6 +6989,28 @@ function verLine(r){
     (r.sources||[]).length > 1 ? h("span",{class:"dim"}, "  (also on " + (r.sources||[]).filter(x=>x !== r.version_from).map(x=>SRC_NAME[x]||x).join(", ") + ")") : null);
 }
 // "LayerSwap-1.14.36" -> "1.14.36": the addon's name in front of the version only takes room.
+// First start: everything needed right on the page — paste a key (CurseForge or Wago, it tells
+// which), and the AddOns folder is usually found by itself.
+function setupCard(c){
+  const out = h("div",{class:"help",style:"min-height:18px;margin-top:6px"});
+  const inp = h("input",{type:"password",placeholder:"Paste your CurseForge API key here (Ctrl+V)",autocomplete:"off",spellcheck:"false",style:"flex:1;min-width:0"});
+  const save = async ()=>{ const k = inp.value.trim(); if (!k) return;
+    out.style.color = "var(--muted)"; out.textContent = "Checking the key…";
+    try{ const r = await post("/api/save_key",{key:k}); out.style.color = r.ok ? "var(--green)" : "var(--red)"; out.textContent = r.message; if (r.ok){ inp.value = ""; refresh(); } }
+    catch(e){ out.style.color = "var(--red)"; out.textContent = e.message; } };
+  inp.addEventListener("paste", ()=>setTimeout(save, 50));
+  inp.addEventListener("keydown", e=>{ if (e.key === "Enter") save(); });
+  const pasteBtn = h("button",{class:"btn",onclick:async ()=>{ try{ inp.value = (await navigator.clipboard.readText()).trim(); save(); }catch(e){ inp.focus(); out.textContent = "Click the box and press Ctrl+V."; } }},"Paste");
+  const steps = h("ol",{style:"text-align:left;margin:10px auto 0;max-width:560px;color:var(--muted);font-size:13px;line-height:1.6"},
+    h("li",{}, "Open ", h("a",{href:"https://console.curseforge.com/"},"console.curseforge.com ↗"), " and sign in (free)."),
+    h("li",{}, "Go to ", h("b",{},"API keys"), " and copy your key."),
+    h("li",{}, "Paste it above — it's checked and saved by itself."));
+  return h("div",{class:"empty",style:"padding:26px 22px"},
+    h("b",{style:"font-size:16px"}, c.has_key ? "Pick your WoW Forever AddOns folder" : "One step left: your CurseForge key"),
+    c.has_key ? h("div",{style:"margin-top:8px"}, "The folder wasn't found automatically. ", h("button",{class:"btn primary",onclick:()=>openSettings()},"Choose folder"))
+      : h("div",{}, h("div",{class:"row setupkey",style:"display:flex;gap:8px;max-width:560px;margin:14px auto 0"}, inp, pasteBtn), out, steps,
+          h("div",{class:"dim",style:"font-size:12px;margin-top:10px"}, "Each person uses their own free key — it's stored only on this PC. A Wago key (optional) can be pasted here too.")));
+}
 function shortVer(v){
   v = String(v||""); const m = v.match(/^[A-Za-z][A-Za-z0-9 '_.]*?[-_ ]+(?=v?\d)/);
   return m && m[0].length < v.length ? v.slice(m[0].length) : v;
@@ -7055,7 +7207,8 @@ async function refresh(soon){
     const r = await fetch("/api/state?since="+logSeq+"&etag="+(S && S.etag || ""));
     const j = await r.json();
     if (!j.same){ S = j; render(); if (view==="chars") renderChars(); }
-    if (firstLoad){ firstLoad=false; if (!S.config.has_key || !S.config.addons_dir_ok) openSettings(true); }
+    // First start: the key can be pasted right on My addons; Settings opens only if the folder is missing.
+    if (firstLoad){ firstLoad=false; if (!S.config.addons_dir_ok) openSettings(true); }
   }catch(e){ $("#dLast").textContent = "Lost connection to the manager — is it still running?"; }
   timer = setTimeout(refresh, S && S.warming ? 300 : S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
 }
@@ -7185,6 +7338,18 @@ $("#bTestKey").onclick = async ()=>{
   try{ const r = await post("/api/test_key",{api_key:$("#fKey").value}); out.style.color = r.ok ? "var(--green)" : "var(--red)"; out.textContent = (r.ok?"✔ ":"✖ ") + r.message; }
   catch(e){ out.style.color="var(--red)"; out.textContent="✖ "+e.message; }
 };
+for (const [id, outId] of [["#fKey","#keyResult"],["#fWago","#wagoResult"]]){
+  $(id).addEventListener("paste", ()=>setTimeout(async ()=>{
+    const k = $(id).value.trim(), out = $(outId); if (!k) return;
+    out.style.display = ""; out.style.color = "var(--muted)"; out.textContent = "Checking the key…";
+    try{ const r = await post("/api/save_key",{key:k}); out.style.color = r.ok ? "var(--green)" : "var(--red)"; out.textContent = (r.ok?"✔ ":"✖ ") + r.message;
+      if (r.ok){ $(id).value = ""; await refresh(); const c = S.config;
+        $("#fKey").placeholder = c.has_key ? "Saved" + (c.key_hint?" (ends in "+c.key_hint+")":"") + " — leave empty to keep" : "Paste your API key";
+        $("#fWago").placeholder = c.has_wago_key ? "Saved" + (c.wago_key_hint?" (ends in "+c.wago_key_hint+")":"") + " — leave empty to keep" : "Paste your Wago key";
+        $("#fUseWago").checked = c.use_wago !== false; } }
+    catch(e){ out.style.color = "var(--red)"; out.textContent = "✖ " + e.message; }
+  }, 50));
+}
 $("#dbar").onclick = ()=>setDrawer(!drawerOpen);
 document.querySelectorAll(".side .tab").forEach(t=>t.onclick=()=>showView(t.dataset.v));
 let bTimer=null;

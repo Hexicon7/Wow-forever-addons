@@ -1,7 +1,7 @@
 {
-  "version": "3.11.5",
-  "file": "WoWForeverAddons-Setup-3.11.5.exe",
-  "sha256": "c28d322c1b47aa4e600028a4d852e26a4767c9d6459a6de695f6d5df3128610e",
-  "size": 5581824,
-  "notes": "WeakAuras tab: just \"Copy string\" on each aura \u2014 then in game /fa \u2192 Import \u2192 paste. The \"Add to game\" list and its helper addon are gone (removed automatically)."
+  "version": "3.12.0",
+  "file": "WoWForeverAddons-Setup-3.12.0.exe",
+  "sha256": "2106a4d157843544ee30bad67b79c32275f53e58679450696234ab983bd60b3a",
+  "size": 5594624,
+  "notes": "Fixed: some addon icons were missing in Browse. Easier keys: paste a CurseForge or Wago key and it's recognised, checked and saved by itself (first start shows the paste box right on My addons). Quieter: \"no WoW Forever file\" is said once per addon instead of at every check. Other folders: hand-installed addons are also looked up on Wago (with a Manage with updates button), and library folders say which addons use them. Starts faster: the program keeps a compiled copy of itself."
 }
