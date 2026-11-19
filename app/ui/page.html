@@ -1369,7 +1369,7 @@ function openSettings(setup){
   $("#fDel").checked = c.delete_after_install !== false;
   $("#fGh").checked = c.use_github !== false;
   $("#fBk").checked = c.backup_wtf !== false;
-  $("#fWin").checked = c.app_window !== false; $("#fBkN").value = c.backup_keep || 10;
+  $("#fWin").checked = c.app_window !== false; $("#fBkN").value = c.backup_keep || 3;
   $("#hostBox").hidden = !c.hosted; $("#winBox").hidden = !!c.hosted;
   $("#fTray").checked = c.tray !== false; $("#fBgH").value = String(c.bg_check_hours ?? 3);
   $("#fBgUp").checked = c.bg_auto_update !== false; $("#fAuto").checked = !!c.autostart;

@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.3"
+APP_VERSION = "3.11.4"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     "delete_after_install": True,  # remove the zip from Downloads once it is installed
     "use_github": True,           # get CurseForge-site-only addons from their GitHub releases when possible
     "backup_wtf": True,           # zip _forever_\\WTF (addon settings) before changing addons
-    "backup_keep": 10,
+    "backup_keep": 3,
     "auto_check": True,           # check for updates when the manager opens (if the last check is >30 min old)
     "wago_key": "",               # personal Wago Addons key (Wago Patreon) — enables Wago as a source
     "use_wago": True,
@@ -168,7 +168,7 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
-KEEP_PREVIOUS_VERSIONS = 2
+KEEP_PREVIOUS_VERSIONS = 1     # one earlier version per addon (enough for Revert / Undo, and light on disk)
 WAGO_KEY_PREFIX = "wago-"      # addons that are only on Wago are stored under "wago-<Wago id>"
 
 
@@ -2438,7 +2438,7 @@ class Manager:
                     except OSError:
                         skipped += 1
         os.replace(tmp, final)
-        keep = max(1, int(self.store.config.get("backup_keep") or 10))
+        keep = max(1, int(self.store.config.get("backup_keep") or 3))
         for old in sorted(bdir.glob("WTF-*.zip"), reverse=True)[keep:]:
             try:
                 old.unlink()
@@ -4791,6 +4791,53 @@ class Manager:
             return "update"
         return "ok" if rec.get("latest_checked_at") else "unchecked"
 
+    def tidy_storage(self):
+        """Keep the program's own files small: the newest WTF backups only (3 unless you chose otherwise),
+        one earlier version per addon, nothing left over from addons you removed."""
+        cfg = self.store.config
+        if not cfg.get("storage_v2"):
+            if int(cfg.get("backup_keep") or 10) == 10:      # 10 was the old default
+                self.store.update_config(backup_keep=3)
+            self.store.update_config(storage_v2=True)
+        freed = 0
+        keep = max(1, int(cfg.get("backup_keep") or 3))
+        try:
+            for old in sorted(self.backups_dir().glob("WTF-*.zip"), reverse=True)[keep:]:
+                try:
+                    freed += old.stat().st_size
+                    old.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        vroot = self.store.dir / "versions"
+        with self.store.lock:
+            for key, rec in self.store.addons.items():
+                prev = rec.get("previous") or []
+                if len(prev) > KEEP_PREVIOUS_VERSIONS:
+                    rec["previous"] = prev[:KEEP_PREVIOUS_VERSIONS]
+                d = vroot / key
+                if d.is_dir():
+                    wanted = {m.get("zip") for m in rec.get("previous") or []}
+                    for z in d.glob("*.zip"):
+                        if z.name not in wanted:
+                            try:
+                                freed += z.stat().st_size
+                                z.unlink()
+                            except OSError:
+                                pass
+            if vroot.is_dir():
+                for d in vroot.iterdir():
+                    if d.is_dir() and d.name not in self.store.addons:
+                        try:
+                            freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                        except OSError:
+                            pass
+                        rmtree(d)
+            self.store.save_state()
+        if freed > 1 << 20:
+            self.log(f"Tidied up old backups and earlier versions ({fmt_size(freed)} freed).", "ok")
+
     def warm_meta(self):
         """Right at start-up: names, icons and descriptions for every addon in one request, so the list
         looks complete within a second instead of after the first full update check."""
@@ -4951,7 +4998,7 @@ class Manager:
                 "delete_after_install": cfg.get("delete_after_install", True),
                 "use_github": cfg.get("use_github", True),
                 "backup_wtf": cfg.get("backup_wtf", True),
-                "backup_keep": cfg.get("backup_keep", 10),
+                "backup_keep": cfg.get("backup_keep", 3),
                 "auto_check": cfg.get("auto_check", True),
                 "has_wago_key": bool((cfg.get("wago_key") or "").strip()),
                 "wago_key_hint": (cfg.get("wago_key") or "")[-4:] if len(cfg.get("wago_key") or "") >= 8 else "",
@@ -5147,7 +5194,7 @@ class App:
             if "auto_dependencies" in body:
                 changes["auto_dependencies"] = bool(body["auto_dependencies"])
             if "backup_keep" in body:
-                changes["backup_keep"] = max(1, min(100, int(body["backup_keep"] or 10)))
+                changes["backup_keep"] = max(1, min(100, int(body["backup_keep"] or 3)))
             for flag in ("auto_manual", "delete_after_install", "use_github", "backup_wtf", "auto_check", "use_wago",
                          "app_window", "tray", "bg_auto_update"):
                 if flag in body:
@@ -5615,6 +5662,7 @@ class App:
                     pass
         self.m.meta_ready = False
         threading.Thread(target=self.m.warm_meta, daemon=True).start()
+        threading.Thread(target=lambda: self.m._quiet(self.m.tidy_storage), daemon=True).start()
         threading.Thread(target=auto_check, daemon=True).start()
         if host_pid:
             def self_update_loop():
@@ -7041,7 +7089,7 @@ function openSettings(setup){
   $("#fDel").checked = c.delete_after_install !== false;
   $("#fGh").checked = c.use_github !== false;
   $("#fBk").checked = c.backup_wtf !== false;
-  $("#fWin").checked = c.app_window !== false; $("#fBkN").value = c.backup_keep || 10;
+  $("#fWin").checked = c.app_window !== false; $("#fBkN").value = c.backup_keep || 3;
   $("#hostBox").hidden = !c.hosted; $("#winBox").hidden = !!c.hosted;
   $("#fTray").checked = c.tray !== false; $("#fBgH").value = String(c.bg_check_hours ?? 3);
   $("#fBgUp").checked = c.bg_auto_update !== false; $("#fAuto").checked = !!c.autostart;

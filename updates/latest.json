@@ -1,7 +1,7 @@
 {
-  "version": "3.11.3",
-  "file": "WoWForeverAddons-Setup-3.11.3.exe",
-  "sha256": "cedf8ebe172aff9da1a9c5a128272f60c3d53c0aa1d4b7f3e10bea4fcb4e88f6",
-  "size": 5580288,
-  "notes": "Faster start: addon names and icons are fetched in one request the moment the program starts, instead of after the first full update check, and the list fills in as soon as they arrive (before, it could take several seconds). Icons are kept while the program runs, so the list no longer reloads them while it updates."
+  "version": "3.11.4",
+  "file": "WoWForeverAddons-Setup-3.11.4.exe",
+  "sha256": "3392a3e319bf621a4e005c6c8c1d2ea939122c97ea475b18a8cd89fab59ca935",
+  "size": 5582848,
+  "notes": "Lighter on disk: only the 3 newest backups of your addon settings are kept (if you never changed the old default of 10, it becomes 3; a number you chose yourself stays), and one earlier version per addon for Revert and Undo. Old extras and leftovers from removed addons are cleaned up when the program starts."
 }
