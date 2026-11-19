@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="preconnect" href="https://media.forgecdn.net">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WoW Forever Addons</title>
 <link rel="icon" type="image/png" href="/favicon.png">
@@ -590,7 +591,23 @@ function fmtDate(iso){ if(!iso) return ""; const d=new Date(iso); if (isNaN(d)) 
 function ago(iso){ if(!iso) return "never"; const s=(Date.now()-new Date(iso))/1000; if(s<90) return "just now"; if(s<3600) return Math.round(s/60)+" min ago"; if(s<86400) return Math.round(s/3600)+" h ago"; return Math.round(s/86400)+" d ago"; }
 function fmtNum(n){ if (n>=1e6) return (n/1e6).toFixed(n>=1e7?0:1)+"M"; if (n>=1e3) return (n/1e3).toFixed(n>=1e4?0:1)+"k"; return String(n); }
 function fmtSize(b){ if(!b) return ""; return b>=1048576 ? (b/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(b/1024))+" KB"; }
-function logoEl(src, name, cls){ const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]); return src ? h("img",{class:cls||"logo",src,alt:"",loading:"lazy",referrerpolicy:"no-referrer",onerror:function(){this.replaceWith(fb())}}) : fb(); }
+// Icons are reused between redraws (the list is redrawn while a job runs), so they're decoded once
+// and never flicker or load again.
+const logoCache = new Map();
+function logoEl(src, name, cls){
+  const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]);
+  if (!src) return fb();
+  const key = (cls||"logo") + "|" + src;
+  let img = logoCache.get(key);
+  if (img && img.dataset.bad) return fb();
+  if (!img){
+    img = h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
+      onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
+    if (logoCache.size > 600) logoCache.clear();
+    logoCache.set(key, img);
+  }
+  return img;
+}
 
 function clientName(n){
   n = parseInt(n,10); if (!n) return "another client";
@@ -1322,7 +1339,7 @@ async function refresh(soon){
     if (!j.same){ S = j; render(); if (view==="chars") renderChars(); }
     if (firstLoad){ firstLoad=false; if (!S.config.has_key || !S.config.addons_dir_ok) openSettings(true); }
   }catch(e){ $("#dLast").textContent = "Lost connection to the manager — is it still running?"; }
-  timer = setTimeout(refresh, S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
+  timer = setTimeout(refresh, S && S.warming ? 300 : S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
 }
 document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) refresh(); });
 

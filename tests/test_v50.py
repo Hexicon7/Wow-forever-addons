@@ -48,6 +48,17 @@ try:
         check(pg.input_value("#fScale") == "100", "Settings shows the size (100 %)")
         check(not errs, f"no page errors {errs}")
         b.close()
+    # start-up: names and icons arrive right away (not after the first full check)
+    app.terminate(); app.wait()
+    t0 = time.time()
+    app = subprocess.Popen([sys.executable, os.environ.get("WFAM_APP", "/home/claude/app/WoWForeverAddons.pyw"), "--no-browser", "--port", "47992"], env=env)
+    while True:
+        try: s = get("/api/state"); break
+        except Exception: time.sleep(0.02)
+    while s.get("warming") and time.time() - t0 < 5:
+        time.sleep(0.05); s = get("/api/state")
+    q = next(a for a in s["managed"] if a["key"] == "1001")
+    check(not s.get("warming") and q["summary"] == "Questie summary" and time.time() - t0 < 3, f"names/icons ready {time.time()-t0:.2f}s after start, before any update check")
 finally:
     app.terminate()
 print("FAILURES:", fails); sys.exit(1 if fails else 0)

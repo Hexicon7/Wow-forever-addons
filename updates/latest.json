@@ -1,7 +1,7 @@
 {
-  "version": "3.11.2",
-  "file": "WoWForeverAddons-Setup-3.11.2.exe",
-  "sha256": "e3e1bb7cf3a4014b0044e7053e56a1e034be2a988b13633e6407189a56b9107b",
-  "size": 5578240,
-  "notes": "The window now shows everything at a real 100 % size, also when Windows' display scaling is 125 % or 150 % (change it under Settings \u2192 Size of text and buttons). The activity panel at the bottom no longer opens by itself \u2014 click the bar to see it (it still opens when the program updates itself). The status column shows the full version instead of cutting it off, and addon cards in Browse no longer show half a line of text."
+  "version": "3.11.3",
+  "file": "WoWForeverAddons-Setup-3.11.3.exe",
+  "sha256": "cedf8ebe172aff9da1a9c5a128272f60c3d53c0aa1d4b7f3e10bea4fcb4e88f6",
+  "size": 5580288,
+  "notes": "Faster start: addon names and icons are fetched in one request the moment the program starts, instead of after the first full update check, and the list fills in as soon as they arrive (before, it could take several seconds). Icons are kept while the program runs, so the list no longer reloads them while it updates."
 }

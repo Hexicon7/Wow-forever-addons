@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.2"
+APP_VERSION = "3.11.3"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -4317,9 +4317,14 @@ class Manager:
             return
         ids = [int(k) for k in recs if str(k).isdigit()]
         mods: dict[int, dict] = {}
-        for c in chunks(ids, 50):
-            for m in cf.mods(c):
-                mods[m["id"]] = m
+        warm = getattr(self, "_meta_cache", None)
+        if warm and time.time() - warm[0] < 120 and all(i in warm[1] for i in ids):
+            mods = dict(warm[1])          # fetched a moment ago at start-up
+        else:
+            for c in chunks(ids, 50):
+                for m in cf.mods(c):
+                    mods[m["id"]] = m
+        self._meta_cache = None
         self._hydrate_installed(cf, recs)
         pending: dict[int, int] = {}
         scan: list[int] = []
@@ -4786,6 +4791,31 @@ class Manager:
             return "update"
         return "ok" if rec.get("latest_checked_at") else "unchecked"
 
+    def warm_meta(self):
+        """Right at start-up: names, icons and descriptions for every addon in one request, so the list
+        looks complete within a second instead of after the first full update check."""
+        try:
+            if not (self.store.config.get("api_key") or "").strip():
+                return
+            ids = [int(k) for k in self.store.addons if str(k).isdigit()]
+            if not ids:
+                return
+            cf = self.client()
+            mods = {}
+            for c in chunks(ids, 50):
+                for m in cf.mods(c):
+                    mods[m["id"]] = m
+            with self.store.lock:
+                for mid, m in mods.items():
+                    rec = self.store.addons.get(str(mid))
+                    if rec:
+                        self._apply_meta(rec, m)
+            self._meta_cache = (time.time(), mods)
+        except Exception:
+            pass
+        finally:
+            self.meta_ready = True
+
     def follow_game_interface(self):
         cfg = self.store.config
         found = game_interface(cfg.get("addons_dir"))
@@ -4957,6 +4987,7 @@ class Manager:
             "wtf_found": bool(self.wtf_dir() and self.wtf_dir().is_dir()),
             "diag": self.diag,
             "job": dict(self.job),
+            "warming": not getattr(self, "meta_ready", True),
             "logs": [e for e in self.logs if e["seq"] > since],
             "log_seq": self._seq,
         }
@@ -5582,6 +5613,8 @@ class App:
                         self.m.run_job("Checking for updates", self.m.op_check)
                 except BusyError:
                     pass
+        self.m.meta_ready = False
+        threading.Thread(target=self.m.warm_meta, daemon=True).start()
         threading.Thread(target=auto_check, daemon=True).start()
         if host_pid:
             def self_update_loop():
@@ -5641,6 +5674,7 @@ PAGE_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="preconnect" href="https://media.forgecdn.net">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WoW Forever Addons</title>
 <link rel="icon" type="image/png" href="/favicon.png">
@@ -6229,7 +6263,23 @@ function fmtDate(iso){ if(!iso) return ""; const d=new Date(iso); if (isNaN(d)) 
 function ago(iso){ if(!iso) return "never"; const s=(Date.now()-new Date(iso))/1000; if(s<90) return "just now"; if(s<3600) return Math.round(s/60)+" min ago"; if(s<86400) return Math.round(s/3600)+" h ago"; return Math.round(s/86400)+" d ago"; }
 function fmtNum(n){ if (n>=1e6) return (n/1e6).toFixed(n>=1e7?0:1)+"M"; if (n>=1e3) return (n/1e3).toFixed(n>=1e4?0:1)+"k"; return String(n); }
 function fmtSize(b){ if(!b) return ""; return b>=1048576 ? (b/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(b/1024))+" KB"; }
-function logoEl(src, name, cls){ const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]); return src ? h("img",{class:cls||"logo",src,alt:"",loading:"lazy",referrerpolicy:"no-referrer",onerror:function(){this.replaceWith(fb())}}) : fb(); }
+// Icons are reused between redraws (the list is redrawn while a job runs), so they're decoded once
+// and never flicker or load again.
+const logoCache = new Map();
+function logoEl(src, name, cls){
+  const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]);
+  if (!src) return fb();
+  const key = (cls||"logo") + "|" + src;
+  let img = logoCache.get(key);
+  if (img && img.dataset.bad) return fb();
+  if (!img){
+    img = h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
+      onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
+    if (logoCache.size > 600) logoCache.clear();
+    logoCache.set(key, img);
+  }
+  return img;
+}
 
 function clientName(n){
   n = parseInt(n,10); if (!n) return "another client";
@@ -6961,7 +7011,7 @@ async function refresh(soon){
     if (!j.same){ S = j; render(); if (view==="chars") renderChars(); }
     if (firstLoad){ firstLoad=false; if (!S.config.has_key || !S.config.addons_dir_ok) openSettings(true); }
   }catch(e){ $("#dLast").textContent = "Lost connection to the manager — is it still running?"; }
-  timer = setTimeout(refresh, S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
+  timer = setTimeout(refresh, S && S.warming ? 300 : S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
 }
 document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) refresh(); });
 
