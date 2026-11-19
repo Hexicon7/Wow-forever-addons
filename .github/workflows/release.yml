@@ -1,0 +1,48 @@
+# Every time a new version is put in updates/ (tools/publish_update.py), publish it as a GitHub release
+# with the setup file attached, so it can be downloaded from the Releases page too.
+name: Publish release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - updates/latest.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the release from updates/latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(jq -r '.version' updates/latest.json)
+          file=$(jq -r '.file' updates/latest.json)
+          sha=$(jq -r '.sha256' updates/latest.json)
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "bad version: $version"; exit 1; }
+          [[ "$file" =~ ^WoWForeverAddons-Setup-[0-9.]+\.exe$ ]] || { echo "bad file name: $file"; exit 1; }
+          echo "$sha  updates/$file" | sha256sum -c -
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released."
+            exit 0
+          fi
+          {
+            jq -r '.notes' updates/latest.json
+            echo
+            echo "**Install:** download \`$file\` below and run it. It installs over the old version and keeps your settings and addons."
+            echo "If Windows says it protected your PC, click *More info* → *Run anyway* (the program isn't signed with a paid certificate)."
+          } > notes.md
+          gh release create "v$version" "updates/$file" \
+            --title "WoW Forever Addons $version" --notes-file notes.md --target "$GITHUB_SHA" --latest
