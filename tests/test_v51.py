@@ -7,6 +7,7 @@ fake_cf.start(); T = fake_cf.toc; tmp = Path(tempfile.mkdtemp()); data = tmp/"da
 forever = tmp/"World of Warcraft"/"_forever_"; addons = forever/"Interface"/"AddOns"; addons.mkdir(parents=True)
 (forever/"WTF"/"Account"/"A").mkdir(parents=True); (forever/"WTF"/"Account"/"A"/"x.lua").write_text("x=1")
 bk = data/"backups"; bk.mkdir()
+(addons/"ForeverAurasCompanion").mkdir(); (addons/"ForeverAurasCompanion"/"data.lua").write_text("ForeverAurasCompanion = {}")
 for i in range(7):
     with zipfile.ZipFile(bk/f"WTF-2026111{i}-120000.zip", "w") as z: z.writestr("WTF/a.txt", "x" * 1000)
 (data/"versions"/"9999").mkdir(parents=True); (data/"versions"/"9999"/"old.zip").write_bytes(b"x" * 2_000_000)   # addon long gone
@@ -30,6 +31,7 @@ try:
     check(len(left) == 3 and left[-1] == "WTF-20261116-120000.zip", f"old backups trimmed to the newest 3: {left}")
     check(st()["config"]["backup_keep"] == 3, "the old default (10) became 3")
     check(not (data/"versions"/"9999").exists(), "leftovers from a removed addon are deleted")
+    check(not (addons/"ForeverAurasCompanion").exists(), "the old 'Add to game' helper addon is removed")
     post("/api/add", {"text": "questie"}); idle()
     for v in ("v12.7.0", "v12.8.0", "v12.9.0"):
         fake_cf.add_file(1001, v, {"Questie/Questie.toc": T("Questie", v[1:])})

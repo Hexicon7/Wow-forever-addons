@@ -1,7 +1,7 @@
 {
-  "version": "3.11.4",
-  "file": "WoWForeverAddons-Setup-3.11.4.exe",
-  "sha256": "3392a3e319bf621a4e005c6c8c1d2ea939122c97ea475b18a8cd89fab59ca935",
-  "size": 5582848,
-  "notes": "Lighter on disk: only the 3 newest backups of your addon settings are kept (if you never changed the old default of 10, it becomes 3; a number you chose yourself stays), and one earlier version per addon for Revert and Undo. Old extras and leftovers from removed addons are cleaned up when the program starts."
+  "version": "3.11.5",
+  "file": "WoWForeverAddons-Setup-3.11.5.exe",
+  "sha256": "c28d322c1b47aa4e600028a4d852e26a4767c9d6459a6de695f6d5df3128610e",
+  "size": 5581824,
+  "notes": "WeakAuras tab: just \"Copy string\" on each aura \u2014 then in game /fa \u2192 Import \u2192 paste. The \"Add to game\" list and its helper addon are gone (removed automatically)."
 }

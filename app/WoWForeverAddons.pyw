@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.11.4"
+APP_VERSION = "3.11.5"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -4810,6 +4810,16 @@ class Manager:
                     pass
         except OSError:
             pass
+        if self.store.state.get("auras"):           # "Add to game" was replaced by "Copy string"
+            with self.store.lock:
+                self.store.state.pop("auras", None)
+            try:
+                rmtree(self._auras_dir())
+            except OSError:
+                pass
+        d = self.store.config.get("addons_dir")
+        if d and (Path(d) / COMPANION_FOLDER).is_dir():
+            rmtree(Path(d) / COMPANION_FOLDER)
         vroot = self.store.dir / "versions"
         with self.store.lock:
             for key, rec in self.store.addons.items():
@@ -6786,36 +6796,24 @@ async function copyAura(ident, btn){
   btn.textContent = old; btn.disabled = false;
 }
 function renderAuras(){
-  const box = $("#bres"), pend = (S && S.auras_pending) || [], busy = !!(S && S.job.running);
+  const box = $("#bres");
   const parts = [];
   if (S && S.config.addons_dir_ok && !S.foreverauras)
     parts.push(h("div",{class:"card",style:"padding:14px 16px;margin-bottom:12px"}, h("b",{},"ForeverAuras isn't installed. "),
       "Auras need the ForeverAuras addon (WoW Forever's WeakAuras). ", h("a",{href:"https://github.com/neroxrw/foreverauras/releases"},"Get ForeverAuras ↗")));
-  if (pend.length)
-    parts.push(h("div",{class:"card",style:"padding:14px 16px;margin-bottom:12px"},
-      h("b",{}, pend.length + (pend.length===1 ? " aura is" : " auras are") + " waiting in game"),
-      h("div",{class:"dim",style:"font-size:12.5px;margin:4px 0 8px"},"Log in (or type /reload), then open /fa — they're at the top under “Ready to install”. They leave this list once imported."),
-      ...pend.map(p=>h("div",{class:"row2",style:"display:flex;gap:10px;align-items:center;padding:4px 0"},
-        h("span",{style:"flex:1"}, p.name, h("span",{class:"dim"}, (p.author ? " · " + p.author : "") + (p.version ? " · " + p.version : ""))),
-        h("button",{class:"btn small ghost",onclick:e=>copyAura(p.slug, e.currentTarget)},"Copy string"),
-        h("button",{class:"btn small ghost danger",onclick:()=>act("/api/aura_remove",{slug:p.slug})},"Remove")))));
   if (A.error) parts.push(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"wago.io search failed"), h("br"), A.error)));
   else if (!A.results.length) parts.push(h("div",{class:"card"}, h("div",{class:"empty"}, A.loading ? "Loading ForeverAuras from wago.io…" : (A.loaded ? "No ForeverAuras match that." : ""))));
-  else parts.push(h("div",{class:"grid"}, ...A.results.map(r=>{
-    const pending = r.pending || pend.some(p=>p.id===r.id);
-    const btn = pending ? h("span",{class:"tag ok",title:"Waiting in game: open /fa"},"Ready in game ✓")
-      : h("button",{class:"btn small primary",disabled:busy,title:"Puts it in ForeverAuras' “Ready to install” list — import it in game with one click",onclick:e=>{ e.stopPropagation(); act("/api/aura_add",{id:r.id}); }},"Add to game");
-    return h("div",{class:"res",title:r.summary},
+  else parts.push(h("div",{class:"grid"}, ...A.results.map(r=>
+    h("div",{class:"res",title:r.summary},
       logoEl(r.thumb, r.name),
       h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
         h("div",{class:"sum"}, r.categories.length ? r.categories.join(" · ") + (r.summary ? " — " : "") : "", r.summary),
         h("div",{class:"meta"}, h("span",{}, "⬇ " + fmtNum(r.installs)), r.stars ? h("span",{}, "★ " + fmtNum(r.stars)) : null,
           r.date ? h("span",{}, fmtDate(new Date(r.date * (r.date < 1e12 ? 1000 : 1)).toISOString())) : null,
           h("a",{href:r.url,onclick:e=>e.stopPropagation()},"wago.io ↗"), h("span",{class:"sp"}),
-          h("button",{class:"btn small ghost",title:"Copy the import string to paste in game yourself (/fa → Import)",onclick:e=>{ e.stopPropagation(); copyAura(r.id, e.currentTarget); }},"Copy"), btn)));
-  })));
+          h("button",{class:"btn small primary",title:"Copies the import string — in game type /fa, click Import and paste",onclick:e=>{ e.stopPropagation(); copyAura(r.id, e.currentTarget); }},"Copy string")))))));
   box.replaceChildren(...parts);
-  $("#srcHint").textContent = "ForeverAuras from wago.io. “Add to game” puts them in ForeverAuras' own install list — no copy-paste needed.";
+  $("#srcHint").textContent = "ForeverAuras from wago.io. “Copy string”, then in game: /fa → Import → paste.";
   setMetaPlain(A.loaded && !A.error ? (A.total >= 10000 ? "10,000+" : A.total.toLocaleString()) + " ForeverAuras" + (B.q ? ` matching “${B.q}”` : "") + (A.cat ? " in " + $("#acat").selectedOptions[0].textContent : "") : "");
   $("#bmore").hidden = !(A.next !== null && !A.error);
   $("#bMoreBtn").disabled = A.loading; $("#bMoreBtn").textContent = A.loading ? "Loading…" : "Show more";
