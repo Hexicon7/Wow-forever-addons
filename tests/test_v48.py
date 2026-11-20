@@ -81,9 +81,10 @@ try:
         time.sleep(3)
         check(rec("tukui-elvui")["installed_version"] == "16.11", "Update all from the window")
         check(pg.locator("#mBatch.show").count() == 0 and pg.locator(".modal.show").count() == 0, "no summary pops up after Update all")
-        pg.click("button.tab[data-v='browse']"); time.sleep(0.6); pg.click(".srcsw button[data-src='tukui']"); time.sleep(1.5)
+        pg.click("button.tab[data-v='browse']"); time.sleep(0.6); pg.fill("#bq", "elvui"); time.sleep(2)
         t = pg.inner_text("#bres")
-        check("ElvUI" in t and "Installed 16.11" in t and pg.inner_text("#vTitle") == "ElvUI & Tukui", "ElvUI & Tukui tab")
+        check("ElvUI" in t and "Installed 16.11" in t and "tukui.org" in t and pg.inner_text("#vTitle") == "Browse addons",
+              "ElvUI shows up in the normal addon search: " + t.replace("\n", " | ")[:200])
         pg.screenshot(path="/home/claude/shots/v48-tukui.png")
         check(not errs, f"no page errors {errs}")
         b.close()

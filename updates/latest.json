@@ -1,7 +1,7 @@
 {
-  "version": "3.12.0",
-  "file": "WoWForeverAddons-Setup-3.12.0.exe",
-  "sha256": "2106a4d157843544ee30bad67b79c32275f53e58679450696234ab983bd60b3a",
-  "size": 5594624,
-  "notes": "Fixed: some addon icons were missing in Browse. Easier keys: paste a CurseForge or Wago key and it's recognised, checked and saved by itself (first start shows the paste box right on My addons). Quieter: \"no WoW Forever file\" is said once per addon instead of at every check. Other folders: hand-installed addons are also looked up on Wago (with a Manage with updates button), and library folders say which addons use them. Starts faster: the program keeps a compiled copy of itself."
+  "version": "3.13.0",
+  "file": "WoWForeverAddons-Setup-3.13.0.exe",
+  "sha256": "1e269c957c4c5d84c5c3d071c8fd461b8412224a4e32a181c81ce69989a45e97",
+  "size": 5600768,
+  "notes": "WeakAuras has its own tab; ElvUI/Tukui show up in the normal addon search; sort My addons by name, date, source or status (menu or column headings); remembers your last tab, sorting and filters; coloured letter icons and the real logo in the sidebar; F5 and Ctrl+1-5 shortcuts; Diagnostics also checks tukui.org and wago.io."
 }

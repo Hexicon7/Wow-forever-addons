@@ -52,16 +52,24 @@ Python installed - it is the same program.)
 
 EVERYDAY USE
 ------------
-* Browse: open the "Browse CurseForge" tab, search (or pick a category /
-  sort order) and click Install. Only addons that have a WoW Forever
-  version are listed. Click several Install buttons in a row - they queue.
+* Browse: search (or pick a category / sort order) and click Install. One
+  search covers CurseForge, Wago and GitHub (the newest version wins), and
+  ElvUI / Tukui from tukui.org show up when you search for them. Only addons
+  that have a WoW Forever version are listed. Click several Install buttons
+  in a row - they queue.
+* WeakAuras: its own tab. Find a ForeverAura on wago.io, "Copy string", then
+  import it in game.
 * Or paste one or more CurseForge links, e.g.
       https://www.curseforge.com/wow/addons/questie
   and press Install (Ctrl+Enter works too). The newest file tagged for
   WoW Forever is installed. Required libraries come along automatically.
-* Check for updates / Update all: buttons at the top.
+* Check for updates / Update all: buttons at the top (F5 checks too).
 * The table shows every managed addon: installed version, newest Forever
   version, status, and how many folders it owns (hover to see them).
+  Sort it with the menu next to the search box, or click a column heading
+  (click again to reverse). The program remembers the tab, sorting and
+  filters you used last.
+* Shortcuts: Ctrl+1..5 switch tabs, Ctrl+F searches, Esc closes things.
 * Pin keeps an addon at its current version. Remove deletes its folders.
 * "Other folders in AddOns" lists things you installed by hand. If the
   addon was packaged by CurseForge, a "Manage with updates" button takes it

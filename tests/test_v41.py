@@ -69,7 +69,7 @@ try:
     check(st["last_batch"] is None and "12.6.0" in (addons/"Questie"/"Questie.toc").read_text(), "files are the old ones again, batch cleared")
     # Wago browsing
     pg.click(".tab[data-v=browse]"); time.sleep(0.8)
-    check(pg.locator("#srcBar").is_visible(), "source switch shown")
+    check(pg.locator("#bq").is_visible() and pg.locator("button.tab[data-v=auras]").count() == 1, "addon search shown; WeakAuras in the sidebar")
     pg.fill("#bq", "ques"); time.sleep(1.5)
     t = pg.inner_text("#bres"); check("Questie" in t and "Installed" in t, "the one Addons search finds Questie (marked installed): " + t.replace("\n", " ")[:100])
     pg.screenshot(path="/home/claude/shots/v41-wago.png")

@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.12.0"
+APP_VERSION = "3.13.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -3064,6 +3064,16 @@ class Manager:
                 add("fail", "Wago key", str(e))
         elif (cfg.get("wago_key") or "").strip():
             add("info", "Wago", "turned off in Settings")
+        try:
+            tk = TukuiOrg().addons()
+            add("ok", "tukui.org reachable", f"{len(tk)} listed: " + ", ".join(a.get("name") or a["slug"] for a in tk[:6]))
+        except Exception as e:
+            add("warn", "tukui.org reachable", str(e))
+        try:
+            hits = (WagoAuras().search("", "", "installs", 0) or {}).get("hits") or []
+            add("ok", "wago.io WeakAuras reachable", f"{len(hits)} ForeverAuras on the first page")
+        except Exception as e:
+            add("warn", "wago.io WeakAuras reachable", str(e))
         # Does our folder fingerprint match CurseForge's? Compare with addons installed from CurseForge.
         try:
             checked = matched = 0
@@ -5116,6 +5126,7 @@ class Manager:
                 "bg_auto_update": cfg.get("bg_auto_update", True),
                 "self_update_dismissed": cfg.get("self_update_dismissed") or "",
                 "ui_scale": str(cfg.get("ui_scale") or "100"),
+                "ui_state": cfg.get("ui_state") if isinstance(cfg.get("ui_state"), dict) else {},
                 "autostart": autostart_enabled(),
                 "wago_game_version": cfg.get("wago_game_version") or "forever",
                 "downloads_dir": cfg.get("downloads_dir") or "",
@@ -5424,6 +5435,15 @@ class App:
             return {"ok": True}
         if path == "/api/changelog":
             return m.changelog(str(body.get("key")))
+        if path == "/api/ui_state":
+            # Where the user was (view, sort, filters) so the next start opens the same way. Quiet: no log line.
+            clean = {}
+            for k, v in (body.get("state") or {}).items() if isinstance(body.get("state"), dict) else []:
+                if isinstance(k, str) and re.fullmatch(r"[a-z_]{1,20}", k) and isinstance(v, (str, int)) and len(clean) < 20:
+                    clean[k] = re.sub(r"[^\w .:-]", "", str(v))[:40]
+            m.store.config["ui_state"] = clean
+            m.store.save_config()
+            return {"ok": True}
         if path == "/api/scan":
             m.run_job("Looking up hand-installed addons", m.op_scan)
             return {"ok": True}
@@ -5885,6 +5905,8 @@ input[type=checkbox]{accent-color:var(--gold);width:15px;height:15px}
 .app{display:flex;height:100vh}
 .side{width:var(--sw);flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px 12px}
 .brand{display:flex;align-items:center;gap:11px;padding:4px 8px 18px}
+.mark img{width:100%;height:100%;border-radius:9px;display:block}
+.mark:has(img){background:none;box-shadow:none}
 .mark{width:36px;height:36px;border-radius:9px;background:linear-gradient(140deg,#f3d48d,#b9822f);display:grid;place-items:center;color:#1b1406;font-weight:800;font-size:18px;box-shadow:0 0 0 1px #00000040 inset,0 4px 14px #e3b75a22;flex:none}
 .bt{font-weight:700;font-size:15px;letter-spacing:.2px;line-height:1.15}
 .bs{color:var(--dim);font-size:12px}
@@ -5900,9 +5922,6 @@ nav{display:flex;flex-direction:column;gap:2px}
 .side .grow{flex:1}
 .selfupd{margin:0 4px 8px;background:linear-gradient(140deg,#e3b75a26,#e3b75a10);border:1px solid #e3b75a66;border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--gold2)}
 .selfupd b{display:block;color:var(--text);font-size:13px;margin-bottom:6px}
-.srcsw{display:inline-flex;border:1px solid var(--line2);border-radius:9px;padding:3px;gap:3px;background:var(--panel)}
-.srcsw button{background:none;border:0;border-radius:6px;padding:6px 12px;color:var(--muted);font-weight:600}
-.srcsw button.on{background:#e3b75a22;color:var(--gold2)}
 .bl{display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
 .bl:last-child{border-bottom:0}
 .bl .n{flex:1;min-width:0}
@@ -5947,6 +5966,12 @@ select{background:var(--panel);border:1px solid var(--line2);border-radius:8px;p
 .stat.upd b{color:var(--amber)} .stat.bad b{color:var(--red)}
 .stat.zero{opacity:.55}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--text)}
+th.sortable.on{color:var(--gold)}
+th .ar{font-size:10px;margin-left:4px}
+#msort{max-width:190px}
+.logo.fb{background:hsl(var(--hue) 32% 24%);color:hsl(var(--hue) 70% 80%);border-color:hsl(var(--hue) 30% 32%)}
 .empty{padding:44px 24px;text-align:center;color:var(--muted)}
 .empty b{color:var(--text);font-size:15px}
 .empty .acts2{display:flex;gap:8px;justify-content:center;margin-top:14px}
@@ -6156,12 +6181,13 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 <div class="toast" id="toast"></div>
 <div class="app">
   <aside class="side">
-    <div class="brand"><div class="mark">F</div><div><div class="bt">WoW Forever</div><div class="bs">Addon Manager</div></div></div>
+    <div class="brand"><div class="mark"><img src="/icon.png" alt="" onerror="this.parentNode.textContent='F'"></div><div><div class="bt">WoW Forever</div><div class="bs">Addon Manager</div></div></div>
     <nav>
-      <button class="tab on" data-v="installed"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="lbl">My addons</span><span class="c" id="tabN">0</span></button>
-      <button class="tab" data-v="browse"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg><span class="lbl">Browse</span></button>
-      <button class="tab" data-v="chars"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c.6-3.4 3.1-5.5 6-5.5s5.4 2.1 6 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.7.7 2.8 2.5 3 5.2"/></svg><span class="lbl">Characters</span></button>
-      <button class="tab" data-v="backups"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg><span class="lbl">Backups</span></button>
+      <button class="tab on" data-v="installed" title="My addons (Ctrl+1)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="lbl">My addons</span><span class="c" id="tabN">0</span></button>
+      <button class="tab" data-v="browse" title="Browse (Ctrl+2)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg><span class="lbl">Browse</span></button>
+      <button class="tab" data-v="auras" title="WeakAuras (Ctrl+3)"><svg viewBox="0 0 24 24"><path d="M11 3.5l1.9 4.6 4.6 1.9-4.6 1.9L11 16.5l-1.9-4.6L4.5 10l4.6-1.9z"/><path d="M18 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg><span class="lbl">WeakAuras</span></button>
+      <button class="tab" data-v="chars" title="Characters (Ctrl+4)"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c.6-3.4 3.1-5.5 6-5.5s5.4 2.1 6 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.7.7 2.8 2.5 3 5.2"/></svg><span class="lbl">Characters</span></button>
+      <button class="tab" data-v="backups" title="Backups (Ctrl+5)"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg><span class="lbl">Backups</span></button>
     </nav>
     <div class="grow"></div>
     <div class="selfupd" id="selfUpd" hidden></div>
@@ -6177,7 +6203,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
     <div class="top">
       <h1 id="vTitle">My addons</h1><span class="sub" id="vSub"></span>
       <span class="sp"></span>
-      <button class="btn" id="bCheck"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
+      <button class="btn" id="bCheck" title="Check for updates (F5)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
       <button class="btn ghost" id="bLast" hidden title="What the last update changed (and Undo)"></button>
       <button class="btn primary" id="bUpdAll">Update all</button>
     </div>
@@ -6194,17 +6220,18 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
           </div>
           <span class="sp"></span>
           <input id="q" class="search" placeholder="Search my addons" autocomplete="off" spellcheck="false">
+          <select id="msort" title="Sort my addons (or click a column heading)"><option value="status">Sort: Status (updates first)</option><option value="name">Sort: Name A–Z</option><option value="name:-1">Sort: Name Z–A</option><option value="installed">Sort: Recently installed</option><option value="latest">Sort: Newest release</option><option value="source">Sort: Source</option></select>
           <button class="btn primary" id="bAddOpen"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add addons</button>
           <button class="btn icon" id="bMoreIns" title="More">⋯</button>
         </div>
         <div class="card" id="managedCard"></div>
-        <h2 id="unH">Other folders in AddOns <span class="c" id="unC">0</span><span style="flex:1"></span><button class="btn small" id="bScan" title="Recognise hand-installed addons by their files (CurseForge fingerprints)">Look up on CurseForge</button></h2>
+        <h2 id="unH">Other folders in AddOns <span class="c" id="unC">0</span><span style="flex:1"></span><button class="btn small" id="bScan" title="Recognise hand-installed addons by their files (CurseForge fingerprints) and by name on Wago">Look up online</button></h2>
         <div class="card" id="unCard"></div>
         <div id="hidBox" style="margin-top:10px"></div>
       </div>
 
       <div id="vBrowse" class="view" hidden>
-        <div class="bar" id="srcBar" hidden><div class="srcsw"><button class="on" data-src="cf">Addons</button><button data-src="tukui">ElvUI &amp; Tukui</button><button data-src="auras">WeakAuras</button></div><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bar" id="srcBar" hidden><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
         <div class="bsearch">
           <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
           <select id="bcat"><option value="">All categories</option></select>
@@ -6309,7 +6336,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 </div></div>
 
 <div class="modal" id="mDiag"><div class="dlg" style="max-width:820px">
-  <h3>Diagnostics</h3><p class="sub">Checks every part against the real CurseForge and GitHub. Nothing is installed; one small addon is downloaded to a temporary folder and deleted. Your API key is never included in the report.</p>
+  <h3>Diagnostics</h3><p class="sub">Checks every part against the real CurseForge, Wago, GitHub and tukui.org. Nothing is installed; one small addon is downloaded to a temporary folder and deleted. Your API key is never included in the report.</p>
   <div id="dgBody"></div>
   <div class="foot"><button class="btn" id="dgCopy">Copy report</button><button class="btn" id="dgRun">Run again</button><button class="btn primary" id="dgClose">Close</button></div>
 </div></div>
@@ -6450,8 +6477,9 @@ function fmtSize(b){ if(!b) return ""; return b>=1048576 ? (b/1048576).toFixed(1
 // Browse / the detail panel showing the same icon must not take it away from the list (or vice versa).
 const logoCache = new Map();
 let logoTick = 0, logoTickQueued = false;
+function hueOf(name){ let x = 0; for (const ch of String(name||"")) x = (x*31 + ch.charCodeAt(0)) >>> 0; return x % 360; }
 function logoEl(src, name, cls, reuse){
-  const fb=()=>h("div",{class:cls||"logo"},(name||"?")[0]);
+  const fb=()=>h("div",{class:(cls||"logo")+" fb",style:"--hue:"+hueOf(name)},((name||"?").replace(/^[^A-Za-z0-9]+/,"")||"?")[0].toUpperCase());
   if (!src) return fb();
   const make = ()=>h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
     onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
@@ -6490,6 +6518,32 @@ const STATUS = {
 const isUpd = a => a.status==="update"||a.status==="update_manual";
 const isBad = a => a.status==="manual"||a.status==="missing"||a.compat==="mismatch"||(a.missing_deps||[]).length>0;
 const rank = a => isUpd(a) ? 0 : isBad(a) ? 1 : a.status==="awaiting" ? 2 : 3;
+// My addons sort: a menu next to the search box, or click a column heading (again to flip the order)
+const MS = {by:"status", dir:1};
+const MS_DEFAULT_DIR = {status:1, name:1, installed:-1, latest:-1, source:1};
+const SRC_ORDER = {curseforge:0, wago:1, github:2, tukui:3};
+const byName = (a,b)=>(a.name||"").localeCompare(b.name||"", undefined, {sensitivity:"base"});
+function mCompare(a, b){
+  const d = MS.dir;
+  switch (MS.by){
+    case "name": return d*byName(a,b);
+    case "installed": return d*String(a.installed_at||"").localeCompare(String(b.installed_at||"")) || byName(a,b);
+    case "latest": return d*String(a.latest_date||a.installed_file_date||"").localeCompare(String(b.latest_date||b.installed_file_date||"")) || byName(a,b);
+    case "source": return d*((SRC_ORDER[a.source] ?? 9) - (SRC_ORDER[b.source] ?? 9)) || byName(a,b);
+    default: return d*(rank(a)-rank(b)) || byName(a,b);
+  }
+}
+function setSort(by, dir){
+  MS.dir = dir || (MS.by===by ? -MS.dir : MS_DEFAULT_DIR[by] || 1); MS.by = by;
+  const v = MS.by + (MS.dir !== (MS_DEFAULT_DIR[MS.by]||1) ? ":" + MS.dir : "");
+  $("#msort").value = [...$("#msort").options].some(o=>o.value===v) ? v : MS.by;
+  saveUi(); render();
+}
+function sortTh(label, by, cls){
+  const on = MS.by===by;
+  return h("th",{class:"sortable" + (on?" on":"") + (cls?" "+cls:""), title:"Sort by " + label.toLowerCase() + (on?" — click again to reverse":""), onclick:()=>setSort(by)},
+    label, on ? h("span",{class:"ar"}, MS.dir>0 ? "▲" : "▼") : null);
+}
 
 // ---------- popover menus ----------
 function openMenu(anchor, items){
@@ -6547,7 +6601,7 @@ function render(){
   if (filter==="updates") rows = rows.filter(isUpd);
   if (filter==="problems") rows = rows.filter(isBad);
   if (filter==="unmanaged") rows = [];
-  rows.sort((a,b)=> rank(a)-rank(b) || (a.name||"").localeCompare(b.name||""));
+  rows.sort(mCompare);
 
   const card = $("#managedCard");
   card.hidden = filter==="unmanaged";
@@ -6560,14 +6614,14 @@ function render(){
     card.replaceChildren(h("div",{class:"empty"},"Nothing matches this filter."));
   } else {
     const main = [], libs = [];
-    for (const a of rows) ((a.library && rank(a)===3 && !q) ? libs : main).push(a);
+    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status") ? libs : main).push(a);
     const tb = h("tbody");
     for (const a of main) tb.append(addonRow(a, busy));
     if (libs.length){
       tb.append(h("tr",{class:"grp",onclick:()=>{ libsOpen=!libsOpen; render(); }}, h("td",{colspan:5}, (libsOpen?"▾ ":"▸ ") + "Libraries ", h("span",{class:"dim"},"("+libs.length+") — shared code other addons need"))));
       if (libsOpen) for (const a of libs) tb.append(addonRow(a, busy));
     }
-    card.replaceChildren(h("table",{}, h("thead",{}, h("tr",{}, h("th",{},"Addon"), h("th",{},"Installed"), h("th",{class:"hide-s"},"Latest for Forever"), h("th",{},"Status"), h("th",{}))), tb));
+    card.replaceChildren(h("table",{}, h("thead",{}, h("tr",{}, sortTh("Addon","name"), sortTh("Installed","installed"), sortTh("Latest for Forever","latest","hide-s"), sortTh("Status","status"), h("th",{}))), tb));
   }
 
   // other folders
@@ -6812,7 +6866,6 @@ let sending = null;
 async function bSearch(append){
   if (B.src === "wago") return wSearch();
   if (B.src === "auras") return aSearch(append);
-  if (B.src === "tukui") return tSearch();
   if (B.loading && append) return;
   const my = ++B.seq;
   B.loading = true; B.error = "";
@@ -6837,6 +6890,7 @@ async function loadCats(){
     const sel = $("#bcat");
     for (const c of r.categories) sel.append(h("option",{value:c.id}, c.name));
     B.catsLoaded = true;
+    if (B.cat){ sel.value = B.cat; if (sel.value !== B.cat) B.cat = ""; }
   }catch(e){}
 }
 function installFromBrowse(id){
@@ -6863,32 +6917,30 @@ async function wSearch(){
 // ---------- ElvUI & Tukui from tukui.org ----------
 const TK = {results:[], loading:false, loaded:false, error:"", seq:0};
 async function tSearch(){
-  const my = ++TK.seq; TK.loading = true; TK.error = ""; renderBrowse();
+  const my = ++TK.seq; TK.loading = true; TK.error = "";
   try{ const r = await post("/api/tukui_list",{}); if (my !== TK.seq) return; TK.results = r.results; TK.loaded = true; }
   catch(e){ if (my === TK.seq) TK.error = e.message; }
   if (my === TK.seq){ TK.loading = false; renderBrowse(); }
 }
-function renderTukui(){
-  const box = $("#bres"), busy = !!(S && S.job.running), q = (B.q||"").toLowerCase();
-  const list = TK.results.filter(r => !q || (r.name + " " + r.summary).toLowerCase().includes(q));
-  $("#srcHint").textContent = "From tukui.org. Installed ones are kept up to date with your other addons (Check for updates / Update all, and in the background).";
-  setMetaPlain(TK.loaded && !TK.error ? list.length + " from tukui.org" : "");
-  $("#bmore").hidden = true;
-  if (TK.error){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"tukui.org didn't answer"), h("br"), TK.error))); return; }
-  if (!list.length){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, TK.loading ? "Loading tukui.org…" : (TK.loaded ? "Nothing matches that." : "")))); return; }
-  box.replaceChildren(h("div",{class:"grid"}, ...list.map(r=>{
-    const managed = S && S.managed.find(a=>a.key===r.key);
-    const btn = r.installed
-      ? (managed && managed.status === "update" ? h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/update",{key:r.key})},"Update to " + r.version) : h("span",{class:"tag ok"},"Installed " + (r.installed_version||"")))
-      : h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/add_tukui",{slug:r.slug})},"Install");
-    return h("div",{class:"res"}, logoEl(r.logo, r.name),
-      h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
-        h("div",{class:"sum"}, r.summary),
-        h("div",{class:"meta"}, h("span",{}, "v" + r.version.replace(/^v/i,"")), r.date ? h("span",{}, fmtDate(r.date)) : null,
-          h("a",{href:r.url},"tukui.org ↗"),
-          r.no_forever ? h("span",{class:"tag warn",title:"The last download had no WoW Forever version in it. Try again when a new version is out."},"no Forever version yet") : null,
-          h("span",{class:"sp"}), btn)));
-  })));
+// ElvUI & Tukui aren't on CurseForge or Wago: they show up in the normal addon search when the name matches.
+function tukuiMatches(){
+  const q = (B.q||"").toLowerCase();
+  if (q.length < 2 || B.cat || !TK.loaded) return [];
+  return TK.results.filter(r => (r.name + " " + r.slug).toLowerCase().includes(q) || q.includes(r.slug));
+}
+function tukuiCard(r, busy){
+  const managed = S && S.managed.find(a=>a.key===r.key);
+  const installed = (managed && managed.folders.length) || r.installed;
+  const btn = installed
+    ? (managed && managed.status === "update" ? h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/update",{key:r.key})},"Update to " + r.version) : h("span",{class:"tag ok"},"Installed " + ((managed && managed.installed_version) || r.installed_version || "")))
+    : h("button",{class:"btn small primary",disabled:busy,onclick:()=>act("/api/add_tukui",{slug:r.slug})},"Install");
+  return h("div",{class:"res",title:r.summary}, logoEl(r.logo, r.name),
+    h("div",{class:"body"}, h("div",{class:"t"}, r.name), h("div",{class:"by"}, r.author ? "by " + r.author : ""),
+      h("div",{class:"sum"}, r.summary),
+      h("div",{class:"meta"}, h("span",{}, "v" + r.version.replace(/^v/i,"")), r.date ? h("span",{}, fmtDate(r.date)) : null,
+        h("a",{href:r.url,target:"_blank",rel:"noopener",title:"ElvUI and Tukui are only on tukui.org. Installed ones are kept up to date with your other addons."},"tukui.org ↗"),
+        r.no_forever ? h("span",{class:"tag warn",title:"The last download had no WoW Forever version in it. Try again when a new version is out."},"no Forever version yet") : null,
+        h("span",{class:"sp"}), btn)));
 }
 // ---------- WeakAuras (ForeverAuras) from wago.io ----------
 const A = {cat:"", sort:"installs", results:[], next:null, total:0, page:0, loading:false, loaded:false, error:"", seq:0, catsLoaded:false};
@@ -7034,18 +7086,16 @@ function setMeta(text){
 }
 function renderBrowse(){
   if ($("#vBrowse").hidden) return;
-  $("#srcBar").hidden = false;
-  if (B.src === "wago") B.src = "cf";
-  document.querySelectorAll(".srcsw button").forEach(b=>b.classList.toggle("on", b.dataset.src===B.src));
-  $("#vTitle").textContent = B.src === "wago" ? "Browse Wago" : B.src === "auras" ? "WeakAuras for WoW Forever" : B.src === "tukui" ? "ElvUI & Tukui" : "Browse addons";
+  if (B.src !== "auras") B.src = "cf";
+  $("#vTitle").textContent = B.src === "auras" ? "WeakAuras for WoW Forever" : "Browse addons";
   $("#bcat").hidden = $("#bsort").hidden = B.src !== "cf";
   $("#acat").hidden = $("#asort").hidden = B.src !== "auras";
-  $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, auction…";
-  if (B.src === "auras"){ $("#wsort").hidden = $("#wcat").hidden = true; renderAuras(); return; }
-  if (B.src === "tukui"){ $("#wsort").hidden = $("#wcat").hidden = true; renderTukui(); return; }
+  $("#bq").placeholder = B.src === "auras" ? "Search ForeverAuras on wago.io — class, cooldowns, raid, rotation…" : "Search WoW Forever addons — bags, quests, bosses, ElvUI…";
+  if (B.src === "auras"){ $("#wsort").hidden = $("#wcat").hidden = true; renderAuras(); $("#srcBar").hidden = !$("#srcHint").textContent; return; }
   $("#wsort").hidden = B.src !== "wago";
   if (B.src === "wago") wagoCats(); else $("#wcat").hidden = true;
-  $("#srcHint").textContent = B.src === "wago" ? "Addons that are on CurseForge too get both sources — the higher version number wins. Wago-only addons are installed and updated from Wago." : "";
+  $("#srcHint").textContent = ""; $("#srcBar").hidden = true;
+  const tk = tukuiMatches(), busyNow = !!(S && S.job.running);
   if (B.src === "wago"){ renderWago($("#bres")); const n = wagoShown().length; setMeta(B.loaded && !B.error ? n + " addon" + (n===1?"":"s") + (B.q ? ` on Wago matching “${B.q}”` : " — popular on Wago") + (W.cat ? " in " + W.cat : "") : ""); $("#bmore").hidden = true; return; }
   const box = $("#bres");
   const managed = new Map((S ? S.managed : []).map(a=>[String(a.key), a]));
@@ -7054,10 +7104,11 @@ function renderBrowse(){
     $("#bmeta").textContent=""; $("#bmore").hidden=true; return;
   }
   if (B.error){ box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, h("b",{},"Search failed"), h("br"), B.error))); }
+  else if (!B.results.length && tk.length){ box.replaceChildren(h("div",{class:"grid"}, ...tk.map(r=>tukuiCard(r, busyNow)))); }
   else if (!B.results.length){
     box.replaceChildren(h("div",{class:"card"}, h("div",{class:"empty"}, B.loading ? "Searching CurseForge…" : (B.loaded ? "No WoW Forever addons match that search." : ""))));
   } else {
-    box.replaceChildren(h("div",{class:"grid"}, ...B.results.map(r=>{
+    box.replaceChildren(h("div",{class:"grid"}, ...tk.map(r=>tukuiCard(r, busyNow)), ...B.results.map(r=>{
       const a = managed.get(String(r.id)) || (r.wago_id ? managed.get("wago-" + r.wago_id) : null);
       let btn;
       if (a && a.folders.length) btn = h("span",{class:"tag ok"}, a.status==="update" ? "Installed · update ready" : "Installed ✓");
@@ -7081,7 +7132,7 @@ function renderBrowse(){
     })));
   }
   setMeta(B.loaded && !B.error ? (B.all ? (B.total >= 10000 ? "10,000+ addons" : `${B.total.toLocaleString()} addon${B.total===1?"":"s"}`) + " on CurseForge, all game versions"
-                                         : "WoW Forever addons") + (B.q ? ` matching “${B.q}”` : "") : "");
+                                         : "WoW Forever addons") + (B.q ? ` matching “${B.q}”` : "") + (tk.length ? ` · ${tk.length} from tukui.org` : "") : "");
   $("#bmore").hidden = !(B.next !== null && !B.error);
   $("#bMoreBtn").disabled = B.loading; $("#bMoreBtn").textContent = B.loading ? "Loading…" : "Show more";
 }
@@ -7182,19 +7233,49 @@ $("#chSave").onclick = async ()=>{
 };
 $("#chDiscard").onclick = ()=>{ chEdits = {}; renderChars(); };
 
+// ---------- remember where the user was (view, sorting, filters) ----------
+let uiRestored = false, uiTimer = null;
+function saveUi(){
+  if (!uiRestored) return;
+  clearTimeout(uiTimer);
+  uiTimer = setTimeout(()=>post("/api/ui_state",{state:{view, filter, msort:MS.by, mdir:MS.dir, bsort:B.sort, bcat:B.cat, asort:A.sort, acat:A.cat}}).catch(()=>{}), 600);
+}
+function restoreUi(u){
+  const okSel = (sel, v) => [...$(sel).options].some(o=>o.value===String(v));
+  if (["status","name","installed","latest","source"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
+  const v = MS.by + (MS.dir !== (MS_DEFAULT_DIR[MS.by]||1) ? ":" + MS.dir : "");
+  $("#msort").value = okSel("#msort", v) ? v : MS.by;
+  if (["all","updates","problems","unmanaged"].includes(u.filter)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
+  if (u.bsort && okSel("#bsort", u.bsort)){ B.sort = String(u.bsort); $("#bsort").value = B.sort; }
+  if (u.bcat) B.cat = String(u.bcat);            // the category lists load later and pick these up
+  if (u.asort && okSel("#asort", u.asort)){ A.sort = String(u.asort); $("#asort").value = A.sort; }
+  if (u.acat) A.cat = String(u.acat);
+  if (["browse","auras","chars","backups"].includes(u.view) && S.config.has_key && S.config.addons_dir_ok) showView(u.view);
+  uiRestored = true;
+}
+
 // ---------- navigation ----------
-const TITLES = {installed:"My addons", browse:"Browse CurseForge", chars:"Characters", backups:"Backups"};
+const TITLES = {installed:"My addons", browse:"Browse addons", auras:"WeakAuras for WoW Forever", chars:"Characters", backups:"Backups"};
+const BQ = {cf:"", auras:""};   // each search keeps its own text
 function showView(v){
   if (v==="settings"){ openSettings(); return; }
   closeSettings(true);
   view = v; closeMenu();
   document.querySelectorAll(".side .tab").forEach(t=>t.classList.toggle("on", t.dataset.v===v));
   $("#vTitle").textContent = TITLES[v]; $("#vSub").textContent = "";
-  $("#vInstalled").hidden = v!=="installed"; $("#vBrowse").hidden = v!=="browse"; $("#vBackups").hidden = v!=="backups"; $("#vChars").hidden = v!=="chars";
+  $("#vInstalled").hidden = v!=="installed"; $("#vBrowse").hidden = v!=="browse" && v!=="auras"; $("#vBackups").hidden = v!=="backups"; $("#vChars").hidden = v!=="chars";
   $("#scroll").scrollTop = 0;
   if (v==="chars") loadChars();
   if (v==="backups") renderBackups();
-  if (v==="browse"){ loadCats(); if (!B.loaded && !B.loading) bSearch(false); else renderBrowse(); setTimeout(()=>$("#bq").focus(),0); }
+  if (v==="browse" || v==="auras"){
+    const src = v==="auras" ? "auras" : "cf";
+    if (B.src !== src){ BQ[B.src] = B.q; B.src = src; B.q = BQ[src] || ""; $("#bq").value = B.q; }
+    if (src==="cf"){ loadCats(); if (!TK.loaded && !TK.loading) tSearch(); }
+    const st = src==="auras" ? A : B;
+    if (!st.loaded && !st.loading) bSearch(false); else renderBrowse();
+    setTimeout(()=>$("#bq").focus(),0);
+  }
+  saveUi();
   if (S) render();
 }
 function setDrawer(open){ drawerOpen=open; $("#drawer").classList.toggle("open",open); $("#dTog").textContent = open?"Hide activity ▼":"Show activity ▲"; if (open){ const lb=$("#logbox"); lb.scrollTop=lb.scrollHeight; } }
@@ -7208,7 +7289,7 @@ async function refresh(soon){
     const j = await r.json();
     if (!j.same){ S = j; render(); if (view==="chars") renderChars(); }
     // First start: the key can be pasted right on My addons; Settings opens only if the folder is missing.
-    if (firstLoad){ firstLoad=false; if (!S.config.addons_dir_ok) openSettings(true); }
+    if (firstLoad){ firstLoad=false; restoreUi(S.config.ui_state || {}); if (!S.config.addons_dir_ok) openSettings(true); }
   }catch(e){ $("#dLast").textContent = "Lost connection to the manager — is it still running?"; }
   timer = setTimeout(refresh, S && S.warming ? 300 : S && S.job.running ? 900 : (document.hidden ? 30000 : 5000));
 }
@@ -7357,12 +7438,13 @@ $("#bq").addEventListener("input", ()=>{ clearTimeout(bTimer); bTimer=setTimeout
 $("#wcat").addEventListener("change", ()=>{ W.cat = $("#wcat").value; renderBrowse(); });
 $("#wsort").addEventListener("change", ()=>{ W.sort = $("#wsort").value; renderBrowse(); });
 $("#bq").addEventListener("keydown", e=>{ if (e.key==="Enter"){ clearTimeout(bTimer); B.q=$("#bq").value.trim(); bSearch(false); } });
-$("#bsort").onchange = ()=>{ B.sort=$("#bsort").value; bSearch(false); };
-$("#bcat").onchange = ()=>{ B.cat=$("#bcat").value; bSearch(false); };
+$("#bsort").onchange = ()=>{ B.sort=$("#bsort").value; saveUi(); bSearch(false); };
+$("#bcat").onchange = ()=>{ B.cat=$("#bcat").value; saveUi(); bSearch(false); };
+$("#msort").onchange = ()=>{ const [by, d] = $("#msort").value.split(":"); setSort(by, d ? +d : (MS_DEFAULT_DIR[by]||1)); };
 $("#bMoreBtn").onclick = ()=>bSearch(true);
-$("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; bSearch(false); });
-$("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; bSearch(false); });
-document.querySelectorAll(".srcsw button").forEach(b=>b.onclick=()=>{ if (B.src===b.dataset.src) return; B.src=b.dataset.src; B.results=[]; B.loaded=false; B.q=$("#bq").value.trim(); bSearch(false); $("#bq").focus(); });
+$("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; saveUi(); bSearch(false); });
+$("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; saveUi(); bSearch(false); });
+
 $("#bBackupNow").onclick = ()=>act("/api/backup_now");
 $("#chReload").onclick = loadChars;
 $("#chAll").onchange = renderChars;
@@ -7395,7 +7477,7 @@ $("#dgRun").onclick = ()=>act("/api/diagnose");
 $("#dgClose").onclick = ()=>$("#mDiag").classList.remove("show");
 $("#dgCopy").onclick = async ()=>{ const t = diagText(); try{ await navigator.clipboard.writeText(t); $("#dgCopy").textContent="Copied ✓"; }catch(e){ const ta=h("textarea",{style:"position:fixed;opacity:0"}); ta.value=t; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); $("#dgCopy").textContent="Copied ✓"; } setTimeout(()=>$("#dgCopy").textContent="Copy report",2000); };
 $("#q").addEventListener("input", render);
-document.querySelectorAll(".stat").forEach(e=>e.onclick=()=>{ filter = (filter===e.dataset.f && filter!=="all") ? "all" : e.dataset.f; render(); });
+document.querySelectorAll(".stat").forEach(e=>e.onclick=()=>{ filter = (filter===e.dataset.f && filter!=="all") ? "all" : e.dataset.f; saveUi(); render(); });
 // A new program version is offered once (Update now / Later). It is never installed without asking.
 let selfOffered = "";
 async function offerSelfUpdate(u){
@@ -7426,7 +7508,9 @@ document.addEventListener("keydown", e=>{
     if (DT.id) return closeDetail();
     if ($("#mSettings").classList.contains("show") && S.config.has_key && S.config.addons_dir_ok) return closeSettings();
   }
-  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="f"){ e.preventDefault(); (view==="browse" ? $("#bq") : $("#q")).focus(); }
+  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="f"){ e.preventDefault(); (view==="browse"||view==="auras" ? $("#bq") : $("#q")).focus(); }
+  if (e.key==="F5" && !e.ctrlKey){ e.preventDefault(); if (!document.querySelector(".modal.show") && !$("#bCheck").disabled) $("#bCheck").click(); }
+  if ((e.ctrlKey||e.metaKey) && !e.shiftKey && !e.altKey && /^[1-5]$/.test(e.key)){ e.preventDefault(); showView(["installed","browse","auras","chars","backups"][+e.key-1]); }
 });
 document.addEventListener("contextmenu", e=>{ if (!e.target.closest("input,textarea,.desc,.cl,.logbox")) e.preventDefault(); });
 refresh();

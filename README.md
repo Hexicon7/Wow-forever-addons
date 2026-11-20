@@ -7,8 +7,8 @@ CurseForge (and Wago / GitHub), without the CurseForge app.
 No administrator rights needed. When a new version is published here, the program tells you and you choose
 when to update (it never updates itself without asking).
 
-Also: WeakAuras for WoW Forever (ForeverAuras) from wago.io — pick them in the program and they show up
-in ForeverAuras' "Ready to install" list in game.
+Also: a WeakAuras tab with ForeverAuras from wago.io — "Copy string", then import it in game.
+ElvUI and Tukui (tukui.org) come up in the normal addon search and are kept up to date too.
 
 Each new version is put in `updates/` (`tools/publish_update.py`) and published as a release automatically
 by `.github/workflows/release.yml`.
