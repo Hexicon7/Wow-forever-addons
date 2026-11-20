@@ -16,7 +16,7 @@ fake_cf.add_mod(4003, "books-on-map", "Books on Map Forever"); fake_cf.add_file(
 (addons/"ElvUI_Hand").mkdir(); (addons/"ElvUI_Hand"/"ElvUI_Hand.toc").write_text(T("ElvUI Hand Plugin", "0.1"))
 (tmp/"data"/"config.json").write_text(json.dumps({"api_key": fake_cf.KEY, "addons_dir": str(addons), "auto_check": False}))
 APP = os.environ.get("WFAM_APP", "/home/claude/app/WoWForeverAddons.pyw")
-env = dict(os.environ, WFAM_API_BASE=fake_cf.BASE, WFAM_DATA_DIR=str(tmp/"data"), WFAM_TUKUI_API=fake_cf.BASE + "/tukui")
+env = dict(os.environ, WFAM_API_BASE=fake_cf.BASE, WFAM_DATA_DIR=str(tmp/"data"), WFAM_TUKUI_API=fake_cf.BASE + "/tukui", WFAM_FAKE_GAME_RUNNING="1")
 B = "http://127.0.0.1:47997"
 app = subprocess.Popen([sys.executable, APP, "--no-browser", "--port", "47997"], env=env); time.sleep(1.2)
 fails = 0
@@ -41,17 +41,34 @@ try:
         pg.goto(B + "/"); time.sleep(1.5)
         names = lambda: pg.locator("#managedCard tbody tr.arow .nm .t").all_inner_texts()
         chips = pg.locator(".fchips .stat").all_inner_texts()
-        check(any(c.startswith("ElvUI") for c in chips) and not any("Tukui" in c or "Ellesmere" in c for c in chips),
-              f"only the UI pack you have gets a chip: {chips}")
-        el = pg.locator(".stat.suite", has_text="ElvUI")
-        check(el.inner_text().replace("\n", " ").endswith("4"), "ElvUI chip counts ElvUI, its two plugins and the hand-installed one: " + el.inner_text())
+        check(any(c.replace("\n", " ") == "UI 4" for c in chips) and not any("ElvUI" in c for c in chips),
+              f"one 'UI' chip counting ElvUI, its two plugins and the hand-installed one: {chips}")
+        el = pg.locator(".stat.suite")
+        check("ElvUI" in el.get_attribute("title"), "its tooltip names the UI packs you have: " + el.get_attribute("title"))
         el.click(); time.sleep(0.4)
         n = sorted(names())
-        check(n == ["ElvUI", "Shadow Plug", "WindTools"], f"chip shows ElvUI and its plugins: {n}")
+        check(n == ["ElvUI", "Shadow Plug", "WindTools"], f"UI shows ElvUI and its plugins: {n}")
+        pg.set_viewport_size({"width": 1180, "height": 830}); time.sleep(0.4); pg.screenshot(path="/home/claude/shots/v55-ui.png"); pg.set_viewport_size({"width": 1400, "height": 900})
+        heads = pg.locator("#managedCard tr.grp.head").all_inner_texts()
+        check(heads == ["ElvUI (3)"], f"grouped under the pack's name: {heads}")
         check("ElvUI Hand Plugin" in pg.inner_text("#unCard") and pg.is_visible("#unCard"), "…and the hand-installed plugin under Other folders")
         check(pg.locator(".stat.suite.on").count() == 1 and pg.locator(".stat.on").count() == 1, "the chip is marked")
         el.click(); time.sleep(0.4)
         check(len(names()) == 5 and pg.locator('.stat[data-f="all"].on').count() == 1, "click again → All")
+        # status column doesn't repeat "tukui.org" when the Latest column already shows it
+        row = pg.locator("tr.arow:has-text('ElvUI')")
+        check(not row.locator(".from").is_visible() and "tukui.org" in row.inner_text(), "ElvUI row says tukui.org once")
+        gp = pg.locator(".top #gameWarn")
+        check(gp.is_visible() and gp.bounding_box()["height"] < 40 and "/reload" in gp.get_attribute("title") and pg.locator(".banner#gameWarn").count() == 0,
+              "WoW running: a small pill up by the buttons, full text on hover")
+        # Update all is only gold when there's something to update
+        check("primary" not in pg.get_attribute("#bUpdAll", "class"), "Update all isn't highlighted with nothing to update")
+        # right-click a row opens its menu at the mouse
+        box = row.bounding_box(); pg.mouse.click(box["x"] + 120, box["y"] + 20, button="right"); time.sleep(0.3)
+        pop = pg.locator("#pop")
+        pb = pop.bounding_box()
+        check(pop.is_visible() and "Remove" in pop.inner_text() and abs(pb["x"] - (box["x"] + 120)) < 4, "right-click opens the row's menu at the mouse")
+        pg.keyboard.press("Escape"); time.sleep(0.2)
         # source menu (replaces the sort menu)
         opts = pg.locator("#msrc option").all_inner_texts()
         check(opts[0] == "All sources" and "tukui.org (1)" in opts and any(o.startswith("CurseForge") for o in opts), f"source menu: {opts}")

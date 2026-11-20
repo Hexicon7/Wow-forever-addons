@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.14.0"
+APP_VERSION = "3.15.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -5976,6 +5976,11 @@ th .ar{font-size:10px;margin-left:4px}
 #msrc{max-width:170px}
 .stat.suite{border-style:dashed}
 .stat.suite.on{border-style:solid}
+tr.grp.head td{cursor:default;color:var(--gold2);background:#151821}
+.gamepill{display:inline-flex;align-items:center;gap:7px;border:1px solid #e8a43c55;background:#e8a43c12;color:#f3c983;border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:help}
+.gamepill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber)}
+#managedCard .from.nar{display:none}
+@media (max-width:1050px){#managedCard .from.nar{display:block}}
 .logo.fb{background:hsl(var(--hue) 32% 24%);color:hsl(var(--hue) 70% 80%);border-color:hsl(var(--hue) 30% 32%)}
 .empty{padding:44px 24px;text-align:center;color:var(--muted)}
 .empty b{color:var(--text);font-size:15px}
@@ -6208,11 +6213,11 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
     <div class="top">
       <h1 id="vTitle">My addons</h1><span class="sub" id="vSub"></span>
       <span class="sp"></span>
+      <span class="gamepill" id="gameWarn" hidden title="WoW is running. Changes take effect after /reload or restarting the game, and Windows may refuse to replace files the game has open.">WoW running · /reload after changes</span>
       <button class="btn" id="bCheck" title="Check for updates (F5)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
       <button class="btn ghost" id="bLast" hidden title="What the last update changed (and Undo)"></button>
       <button class="btn primary" id="bUpdAll">Update all</button>
     </div>
-    <div class="banner" id="gameWarn" hidden>⚠ WoW is running. Changes take effect after <b>/reload</b> or restarting the game, and Windows may refuse to replace files the game has open.</div>
     <div class="scroll" id="scroll">
 
       <div id="vInstalled" class="view">
@@ -6530,6 +6535,7 @@ const MS = {by:"status", dir:1};
 const MS_DEFAULT_DIR = {status:1, name:1, installed:-1, latest:-1};
 // big UI packs: a chip appears next to "Other folders" when you have one, showing it and its plugins
 const SUITES = [{id:"elvui", name:"ElvUI", re:/^elvui/i}, {id:"tukui", name:"Tukui", re:/^tukui/i}, {id:"ellesmere", name:"EllesmereUI", re:/^ellesmere/i}];
+const suiteOf = x => SUITES.find(su=>inSuite(x, su)) || null;
 const inSuite = (x, su) => su.re.test(x.name||x.title||"") || (x.folders||[]).some(f=>su.re.test(f)) || (x.deps||[]).some(d=>su.re.test(d));
 const SRC_LABEL = {curseforge:"CurseForge", wago:"Wago", github:"GitHub", tukui:"tukui.org"};
 let mSrc = "";
@@ -6599,16 +6605,19 @@ function render(){
   document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter));
   const nU = m.filter(a=>a.status==="update").length;
   $("#bUpdAll").textContent = nU ? `Update all (${nU})` : "Update all";
+  $("#bUpdAll").classList.toggle("primary", nU > 0);
+  $("#bUpdAll").title = nU ? "Install every update that's ready" : "Nothing to update right now — this checks first and installs anything new";
   for (const id of ["#bCheck","#bUpdAll","#bAdd"]) $(id).disabled = busy;
   if (view==="installed"){ const checked = m.map(a=>a.checked_at).filter(Boolean).sort().pop(); $("#vSub").textContent = m.length ? "Last check: " + ago(checked) : ""; }
   if (DT.id) renderDetail();
   renderSelfUpdate(); checkBatch();
 
   // UI-pack chips (only for packs you have) and the source menu (only when there's more than one source)
-  const suitesHave = SUITES.map(su=>({su, n: m.filter(a=>a.folders.length && inSuite(a, su)).length + S.unmanaged.filter(g=>inSuite(g, su)).length})).filter(x=>x.n);
-  if (filter.startsWith("suite:") && !suitesHave.some(x=>"suite:"+x.su.id===filter)) filter = "all";
-  $("#suites").replaceChildren(...suitesHave.map(({su, n})=>h("button",{class:"stat suite" + (filter==="suite:"+su.id ? " on" : ""), "data-f":"suite:"+su.id,
-    title:"Show " + su.name + " and its plugins", onclick:()=>{ filter = filter==="suite:"+su.id ? "all" : "suite:"+su.id; saveUi(); render(); }}, su.name + " ", h("b",{}, String(n)))));
+  const suitesHave = SUITES.filter(su=>m.some(a=>a.folders.length && suiteOf(a)===su) || S.unmanaged.some(g=>suiteOf(g)===su));
+  const nUi = m.filter(a=>a.folders.length && suiteOf(a)).length + S.unmanaged.filter(g=>suiteOf(g)).length;
+  if (filter==="ui" && !nUi) filter = "all";
+  $("#suites").replaceChildren(...(nUi ? [h("button",{class:"stat suite" + (filter==="ui" ? " on" : ""), "data-f":"ui",
+    title:"Your UI packs and their plugins: " + suitesHave.map(su=>su.name).join(", "), onclick:()=>{ filter = filter==="ui" ? "all" : "ui"; saveUi(); render(); }}, "UI ", h("b",{}, String(nUi)))] : []));
   const srcCount = {};
   for (const a of m) if (a.folders.length) srcCount[a.source||"curseforge"] = (srcCount[a.source||"curseforge"]||0) + 1;
   const srcs = Object.keys(srcCount).sort((x,y)=>srcCount[y]-srcCount[x]);
@@ -6619,14 +6628,14 @@ function render(){
     sel.replaceChildren(h("option",{value:""}, "All sources"), ...srcs.map(x=>h("option",{value:x}, (SRC_LABEL[x]||x) + " (" + srcCount[x] + ")")));
   }
   sel.value = mSrc; sel.hidden = srcs.length < 2;
-  const suite = filter.startsWith("suite:") ? SUITES.find(su=>"suite:"+su.id===filter) : null;
+  const suite = filter==="ui";
 
   const q = $("#q").value.trim().toLowerCase();
   let rows = m.filter(a => !q || (a.name||"").toLowerCase().includes(q) || a.folders.join(" ").toLowerCase().includes(q) || (a.authors||[]).join(" ").toLowerCase().includes(q));
   if (filter==="updates") rows = rows.filter(isUpd);
   if (filter==="problems") rows = rows.filter(isBad);
   if (filter==="unmanaged") rows = [];
-  if (suite) rows = rows.filter(a=>inSuite(a, suite));
+  if (suite) rows = rows.filter(a=>suiteOf(a));
   if (mSrc) rows = rows.filter(a=>(a.source||"curseforge")===mSrc);
   rows.sort(mCompare);
 
@@ -6643,7 +6652,14 @@ function render(){
     const main = [], libs = [];
     for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite) ? libs : main).push(a);
     const tb = h("tbody");
-    for (const a of main) tb.append(addonRow(a, busy));
+    if (suite){   // grouped under each UI pack: "ElvUI (3)", "EllesmereUI (1)" …
+      for (const su of SUITES){
+        const g = main.filter(a=>suiteOf(a)===su);
+        if (!g.length) continue;
+        tb.append(h("tr",{class:"grp head"}, h("td",{colspan:narrow() ? 4 : 5}, su.name + " ", h("span",{class:"dim"}, "(" + g.length + ")"))));
+        for (const a of g) tb.append(addonRow(a, busy));
+      }
+    } else for (const a of main) tb.append(addonRow(a, busy));
     if (libs.length){
       tb.append(h("tr",{class:"grp",onclick:()=>{ libsOpen=!libsOpen; render(); }}, h("td",{colspan:narrow() ? 4 : 5}, (libsOpen?"▾ ":"▸ ") + "Libraries ", h("span",{class:"dim"},"("+libs.length+") — shared code other addons need"))));
       if (libsOpen) for (const a of libs) tb.append(addonRow(a, busy));
@@ -6652,7 +6668,7 @@ function render(){
   }
 
   // other folders
-  const un = suite ? S.unmanaged.filter(g=>inSuite(g, suite)) : mSrc ? [] : S.unmanaged, hid = S.hidden_folders || [];
+  const un = suite ? S.unmanaged.filter(g=>suiteOf(g)) : mSrc ? [] : S.unmanaged, hid = S.hidden_folders || [];
   $("#unC").textContent = un.length;
   const showUn = (filter==="all"||filter==="unmanaged"||(suite && un.length)) && c.addons_dir_ok && !mSrc;
   $("#unH").style.display = showUn && (un.length || filter==="unmanaged") ? "" : "none";
@@ -6728,7 +6744,8 @@ function addonRow(a, busy){
   const inst = a.installed_version ? h("div",{class:"vv",title:a.installed_version}, shortVer(a.installed_version),
       h("div",{class:"d"}, (a.source==="github"?"GitHub · ":"") + (a.source==="wago"?"Wago · ":"") + (a.external?"changed outside the manager · ":"") + (a.manual?"manual zip · ":"") + (a.installed_release_type!=="Release"? a.installed_release_type+" · ":"") + fmtDate(a.installed_date)))
     : h("span",{class:"dim"},"—");
-  const tr = h("tr",{class:"arow"},
+  const tr = h("tr",{class:"arow",oncontextmenu:e=>{ if (e.target.closest("a,input")) return; e.preventDefault();
+      openMenu({getBoundingClientRect:()=>{ const w = $("#pop").offsetWidth; return {left:e.clientX, right:e.clientX + w, top:e.clientY - 6, bottom:e.clientY - 6}; }}, rowMenu(a, !!(S && S.job.running))); }},
     h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
@@ -7102,7 +7119,7 @@ function statusCell(a, label, cls){
   const text = upd ? "Update → " + shortVer(a.update_version) : label;
   const from = upd && a.update_from ? "from " + (SRC_NAME[a.update_from]||a.update_from) : (a.tukui ? "tukui.org" : "");
   const tip = upd ? "Update to " + a.update_version + (a.update_from ? " from " + (SRC_NAME[a.update_from]||a.update_from) : "") : label;
-  return [h("span",{class:"pill p-"+cls,title:tip}, h("span",{class:"tx"}, text)), from ? h("div",{class:"from"}, from) : null];
+  return [h("span",{class:"pill p-"+cls,title:tip}, h("span",{class:"tx"}, text)), from ? h("div",{class:"from" + (upd ? "" : " nar")}, from) : null];
 }
 function noForever(r){
   return r.forever === false ? h("span",{class:"tag warn",title:"No WoW Forever build is listed for this addon — it was probably made for another version of WoW and may not work."},"no Forever version") : null;
@@ -7274,7 +7291,7 @@ function restoreUi(u){
   const okSel = (sel, v) => [...$(sel).options].some(o=>o.value===String(v));
   if (["status","name","installed","latest"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
   if (["curseforge","wago","github","tukui"].includes(u.msrc)) mSrc = u.msrc;
-  if (["all","updates","problems","unmanaged"].includes(u.filter) || SUITES.some(su=>u.filter==="suite:"+su.id)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
+  if (["all","updates","problems","unmanaged"].includes(u.filter) || u.filter==="ui"){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
   if (u.bsort && okSel("#bsort", u.bsort)){ B.sort = String(u.bsort); $("#bsort").value = B.sort; }
   if (u.bcat) B.cat = String(u.bcat);            // the category lists load later and pick these up
   if (u.asort && okSel("#asort", u.asort)){ A.sort = String(u.asort); $("#asort").value = A.sort; }

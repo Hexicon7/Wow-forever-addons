@@ -1,7 +1,7 @@
 {
-  "version": "3.14.0",
-  "file": "WoWForeverAddons-Setup-3.14.0.exe",
-  "sha256": "841931ed748db9411ea395270ff5bb774265d562525e82fdcdf3600cf7c6ef85",
-  "size": 5602816,
-  "notes": "My addons: chips for ElvUI / Tukui / EllesmereUI (shows the UI and its plugins), a source menu instead of the sort menu (sort by clicking the column headings), toolbar stays on one line, no empty column in smaller windows, shorter version labels (v2.3.2 instead of the zip file name)."
+  "version": "3.15.0",
+  "file": "WoWForeverAddons-Setup-3.15.0.exe",
+  "sha256": "19e0c752061229e04f97d5d13e4e237e95293c7a4b5450e4d1d9d43470b5757a",
+  "size": 5604352,
+  "notes": "One 'UI' chip in My addons shows ElvUI / Tukui / EllesmereUI and their plugins, grouped per UI. 'WoW running' is a small label by the buttons instead of a big banner. Update all is only gold when there's something to update. Right-click an addon for its menu. ElvUI no longer says tukui.org twice."
 }

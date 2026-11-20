@@ -68,8 +68,9 @@ EVERYDAY USE
   version, status, and how many folders it owns (hover to see them).
   Click a column heading to sort (click again to reverse). The source menu
   next to the search box shows only CurseForge, Wago, GitHub or tukui.org
-  addons. If you use ElvUI, Tukui or EllesmereUI, a chip next to "Other
-  folders" shows that UI and its plugins. The program remembers the tab,
+  addons. If you use ElvUI, Tukui or EllesmereUI, the "UI" chip next to
+  "Other folders" shows them and their plugins, grouped per UI. Right-click
+  an addon for the same menu as its ⋯ button. The program remembers the tab,
   sorting and filters you used last.
 * Shortcuts: Ctrl+1..5 switch tabs, Ctrl+F searches, Esc closes things.
 * Pin keeps an addon at its current version. Remove deletes its folders.
