@@ -56,12 +56,12 @@ try:
         check("▲" in pg.inner_text("#managedCard th.on"), "the sorted column is marked with an arrow")
         pg.click("#managedCard th:has-text('Addon')"); time.sleep(0.4)
         r2 = rows()
-        check(r2 == sorted(r1, key=str.lower, reverse=True) and pg.input_value("#msort") == "name:-1", f"click again → Z–A, menu follows: {r2}")
-        pg.select_option("#msort", "status"); time.sleep(0.4)
+        check(r2 == sorted(r1, key=str.lower, reverse=True), f"click again → Z–A: {r2}")
+        pg.click("#managedCard th:has-text('Status')"); time.sleep(0.4)
         on_th = pg.locator("#managedCard th.on").all_inner_texts()
-        check(len(on_th) == 1 and on_th[0].lower().startswith("status"), f"the sort menu changes the marked column: {on_th}")
-        pg.select_option("#msort", "name"); time.sleep(0.4)
-        check(rows() == r1, "menu: Name A–Z")
+        check(len(on_th) == 1 and on_th[0].lower().startswith("status"), f"Status heading sorts: {on_th}")
+        pg.click("#managedCard th:has-text('Addon')"); time.sleep(0.4)
+        check(rows() == r1 and pg.locator("#msort").count() == 0, "back to A–Z; no sort menu repeating the headings")
         # fallback letters get their own colour
         pg.evaluate("""() => { const a = document.createElement('div'); a.id = 'fbtest';
              a.append(logoEl('', 'Alpha'), logoEl('', 'Zeta Thing'), logoEl('', '!BugGrabber')); document.body.append(a); }""")
@@ -105,7 +105,7 @@ try:
         pg.goto(B + "/"); time.sleep(2)
         check(pg.inner_text("#vTitle") == "WeakAuras for WoW Forever" and pg.input_value("#asort") == "date", "next start opens where you left off")
         pg.click("button.tab[data-v='installed']"); time.sleep(0.5)
-        check(pg.input_value("#msort") == "name", "…with your sorting in My addons")
+        check("addon" in pg.inner_text("#managedCard th.on").lower(), "…with your sorting in My addons")
         pg.click("#bDiag") if pg.locator("#bDiag").is_visible() else None
         check("CurseForge, Wago, GitHub and tukui.org" in pg.content(), "Diagnostics text names every source")
         check(not errs, f"no page errors {errs}")

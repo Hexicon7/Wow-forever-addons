@@ -1,7 +1,7 @@
 {
-  "version": "3.13.0",
-  "file": "WoWForeverAddons-Setup-3.13.0.exe",
-  "sha256": "1e269c957c4c5d84c5c3d071c8fd461b8412224a4e32a181c81ce69989a45e97",
-  "size": 5600768,
-  "notes": "WeakAuras has its own tab; ElvUI/Tukui show up in the normal addon search; sort My addons by name, date, source or status (menu or column headings); remembers your last tab, sorting and filters; coloured letter icons and the real logo in the sidebar; F5 and Ctrl+1-5 shortcuts; Diagnostics also checks tukui.org and wago.io."
+  "version": "3.14.0",
+  "file": "WoWForeverAddons-Setup-3.14.0.exe",
+  "sha256": "841931ed748db9411ea395270ff5bb774265d562525e82fdcdf3600cf7c6ef85",
+  "size": 5602816,
+  "notes": "My addons: chips for ElvUI / Tukui / EllesmereUI (shows the UI and its plugins), a source menu instead of the sort menu (sort by clicking the column headings), toolbar stays on one line, no empty column in smaller windows, shorter version labels (v2.3.2 instead of the zip file name)."
 }

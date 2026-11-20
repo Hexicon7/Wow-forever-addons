@@ -66,9 +66,11 @@ EVERYDAY USE
 * Check for updates / Update all: buttons at the top (F5 checks too).
 * The table shows every managed addon: installed version, newest Forever
   version, status, and how many folders it owns (hover to see them).
-  Sort it with the menu next to the search box, or click a column heading
-  (click again to reverse). The program remembers the tab, sorting and
-  filters you used last.
+  Click a column heading to sort (click again to reverse). The source menu
+  next to the search box shows only CurseForge, Wago, GitHub or tukui.org
+  addons. If you use ElvUI, Tukui or EllesmereUI, a chip next to "Other
+  folders" shows that UI and its plugins. The program remembers the tab,
+  sorting and filters you used last.
 * Shortcuts: Ctrl+1..5 switch tabs, Ctrl+F searches, Esc closes things.
 * Pin keeps an addon at its current version. Remove deletes its folders.
 * "Other folders in AddOns" lists things you installed by hand. If the

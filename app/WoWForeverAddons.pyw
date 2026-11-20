@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.13.0"
+APP_VERSION = "3.14.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -4987,11 +4987,12 @@ class Manager:
                 not loc.get("pending") and loc.get("toc") and toc.get("version") and toc["version"] != loc["toc"])
             if outside and not r.get("external"):
                 r["installed_version"] = toc["version"]
-            missing = []
+            missing, needs = [], []
             if dir_ok:
                 for folder in r.get("folders") or []:
                     t = toc if folder == r.get("primary") else read_toc(addons_dir / folder)
                     missing += [d for d in t.get("deps") or [] if d.lower() not in present and d not in missing]
+                    needs += [d for d in t.get("deps") or [] if d not in needs]
             compat = compat_of(toc.get("interfaces") or [], wanted) if toc.get("loads", True) else "mismatch"
             newest = self.newest_available(r)
             managed.append({
@@ -5022,7 +5023,7 @@ class Manager:
                 "distribution_disabled": bool(r.get("distribution_disabled")),
                 "status": self.status_of(r),
                 "toc_interfaces": toc.get("interfaces") or [],
-                "compat": compat, "toc_file": toc.get("toc") or "", "missing_deps": missing,
+                "compat": compat, "toc_file": toc.get("toc") or "", "missing_deps": missing, "deps": needs[:20],
                 "previous_version": ((r.get("previous") or [{}])[0] or {}).get("installed_version")
                 if r.get("previous") else None,
             })
@@ -5958,6 +5959,8 @@ main{flex:1;min-width:0;display:flex;flex-direction:column}
 select{background:var(--panel);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;color:var(--text);font:inherit}
 .bar{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
 .bar .sp{flex:1}
+.bar .bright{display:flex;align-items:center;gap:10px;margin-left:auto}
+.bar .bright .search{min-width:0;width:220px}
 .fchips{display:flex;gap:6px;flex-wrap:wrap}
 .stat{display:inline-flex;align-items:center;gap:8px;background:transparent;border:1px solid var(--line2);border-radius:999px;padding:6px 13px;color:var(--muted);font-weight:600;font-size:13px;transition:all .12s}
 .stat b{font-variant-numeric:tabular-nums;color:var(--text);font-weight:700}
@@ -5970,7 +5973,9 @@ th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--text)}
 th.sortable.on{color:var(--gold)}
 th .ar{font-size:10px;margin-left:4px}
-#msort{max-width:190px}
+#msrc{max-width:170px}
+.stat.suite{border-style:dashed}
+.stat.suite.on{border-style:solid}
 .logo.fb{background:hsl(var(--hue) 32% 24%);color:hsl(var(--hue) 70% 80%);border-color:hsl(var(--hue) 30% 32%)}
 .empty{padding:44px 24px;text-align:center;color:var(--muted)}
 .empty b{color:var(--text);font-size:15px}
@@ -6172,7 +6177,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 .lightbox.show{display:flex}
 .lightbox img{max-width:92vw;max-height:90vh;border-radius:8px}
 
-@media (max-width:1250px){.hide-s{display:none} #managedCard th:nth-child(2){width:18%} #managedCard th:nth-child(4){width:clamp(150px,26%,300px)} #managedCard th:nth-child(5){width:150px}}
+@media (max-width:1050px){.hide-s{display:none} #managedCard th:nth-child(2){width:18%} #managedCard th:nth-child(4){width:clamp(150px,26%,300px)} #managedCard th:nth-child(5){width:150px}}
 @media (max-width:1050px) and (min-width:901px){:root{--sw:212px} .tab{white-space:nowrap} .scroll{padding-left:18px;padding-right:18px} .top{padding-left:18px;padding-right:18px}}
 @media (max-width:900px){:root{--sw:64px} .side .lbl,.side .c,.brand>div:last-child,.sfoot .path,.sfoot .ver,#bSelfChk{display:none} .tab{justify-content:center} .hide-s{display:none}}
 </style>
@@ -6217,12 +6222,14 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
             <button class="stat upd" data-f="updates">Updates <b id="sUpd">0</b></button>
             <button class="stat bad" data-f="problems">Need attention <b id="sBad">0</b></button>
             <button class="stat" data-f="unmanaged">Other folders <b id="sUn">0</b></button>
+            <span id="suites" style="display:contents"></span>
           </div>
-          <span class="sp"></span>
+          <div class="bright">
           <input id="q" class="search" placeholder="Search my addons" autocomplete="off" spellcheck="false">
-          <select id="msort" title="Sort my addons (or click a column heading)"><option value="status">Sort: Status (updates first)</option><option value="name">Sort: Name A–Z</option><option value="name:-1">Sort: Name Z–A</option><option value="installed">Sort: Recently installed</option><option value="latest">Sort: Newest release</option><option value="source">Sort: Source</option></select>
+          <select id="msrc" title="Show only addons from one source (sort by clicking a column heading)" hidden></select>
           <button class="btn primary" id="bAddOpen"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add addons</button>
           <button class="btn icon" id="bMoreIns" title="More">⋯</button>
+          </div>
         </div>
         <div class="card" id="managedCard"></div>
         <h2 id="unH">Other folders in AddOns <span class="c" id="unC">0</span><span style="flex:1"></span><button class="btn small" id="bScan" title="Recognise hand-installed addons by their files (CurseForge fingerprints) and by name on Wago">Look up online</button></h2>
@@ -6520,8 +6527,12 @@ const isBad = a => a.status==="manual"||a.status==="missing"||a.compat==="mismat
 const rank = a => isUpd(a) ? 0 : isBad(a) ? 1 : a.status==="awaiting" ? 2 : 3;
 // My addons sort: a menu next to the search box, or click a column heading (again to flip the order)
 const MS = {by:"status", dir:1};
-const MS_DEFAULT_DIR = {status:1, name:1, installed:-1, latest:-1, source:1};
-const SRC_ORDER = {curseforge:0, wago:1, github:2, tukui:3};
+const MS_DEFAULT_DIR = {status:1, name:1, installed:-1, latest:-1};
+// big UI packs: a chip appears next to "Other folders" when you have one, showing it and its plugins
+const SUITES = [{id:"elvui", name:"ElvUI", re:/^elvui/i}, {id:"tukui", name:"Tukui", re:/^tukui/i}, {id:"ellesmere", name:"EllesmereUI", re:/^ellesmere/i}];
+const inSuite = (x, su) => su.re.test(x.name||x.title||"") || (x.folders||[]).some(f=>su.re.test(f)) || (x.deps||[]).some(d=>su.re.test(d));
+const SRC_LABEL = {curseforge:"CurseForge", wago:"Wago", github:"GitHub", tukui:"tukui.org"};
+let mSrc = "";
 const byName = (a,b)=>(a.name||"").localeCompare(b.name||"", undefined, {sensitivity:"base"});
 function mCompare(a, b){
   const d = MS.dir;
@@ -6529,14 +6540,11 @@ function mCompare(a, b){
     case "name": return d*byName(a,b);
     case "installed": return d*String(a.installed_at||"").localeCompare(String(b.installed_at||"")) || byName(a,b);
     case "latest": return d*String(a.latest_date||a.installed_file_date||"").localeCompare(String(b.latest_date||b.installed_file_date||"")) || byName(a,b);
-    case "source": return d*((SRC_ORDER[a.source] ?? 9) - (SRC_ORDER[b.source] ?? 9)) || byName(a,b);
     default: return d*(rank(a)-rank(b)) || byName(a,b);
   }
 }
 function setSort(by, dir){
   MS.dir = dir || (MS.by===by ? -MS.dir : MS_DEFAULT_DIR[by] || 1); MS.by = by;
-  const v = MS.by + (MS.dir !== (MS_DEFAULT_DIR[MS.by]||1) ? ":" + MS.dir : "");
-  $("#msort").value = [...$("#msort").options].some(o=>o.value===v) ? v : MS.by;
   saveUi(); render();
 }
 function sortTh(label, by, cls){
@@ -6596,11 +6604,30 @@ function render(){
   if (DT.id) renderDetail();
   renderSelfUpdate(); checkBatch();
 
+  // UI-pack chips (only for packs you have) and the source menu (only when there's more than one source)
+  const suitesHave = SUITES.map(su=>({su, n: m.filter(a=>a.folders.length && inSuite(a, su)).length + S.unmanaged.filter(g=>inSuite(g, su)).length})).filter(x=>x.n);
+  if (filter.startsWith("suite:") && !suitesHave.some(x=>"suite:"+x.su.id===filter)) filter = "all";
+  $("#suites").replaceChildren(...suitesHave.map(({su, n})=>h("button",{class:"stat suite" + (filter==="suite:"+su.id ? " on" : ""), "data-f":"suite:"+su.id,
+    title:"Show " + su.name + " and its plugins", onclick:()=>{ filter = filter==="suite:"+su.id ? "all" : "suite:"+su.id; saveUi(); render(); }}, su.name + " ", h("b",{}, String(n)))));
+  const srcCount = {};
+  for (const a of m) if (a.folders.length) srcCount[a.source||"curseforge"] = (srcCount[a.source||"curseforge"]||0) + 1;
+  const srcs = Object.keys(srcCount).sort((x,y)=>srcCount[y]-srcCount[x]);
+  if (mSrc && !srcCount[mSrc]) mSrc = "";
+  const sel = $("#msrc"), want = ["", ...srcs].map(x=>x + ":" + (x ? srcCount[x] : nIns)).join("|");
+  if (sel.dataset.k !== want){
+    sel.dataset.k = want;
+    sel.replaceChildren(h("option",{value:""}, "All sources"), ...srcs.map(x=>h("option",{value:x}, (SRC_LABEL[x]||x) + " (" + srcCount[x] + ")")));
+  }
+  sel.value = mSrc; sel.hidden = srcs.length < 2;
+  const suite = filter.startsWith("suite:") ? SUITES.find(su=>"suite:"+su.id===filter) : null;
+
   const q = $("#q").value.trim().toLowerCase();
   let rows = m.filter(a => !q || (a.name||"").toLowerCase().includes(q) || a.folders.join(" ").toLowerCase().includes(q) || (a.authors||[]).join(" ").toLowerCase().includes(q));
   if (filter==="updates") rows = rows.filter(isUpd);
   if (filter==="problems") rows = rows.filter(isBad);
   if (filter==="unmanaged") rows = [];
+  if (suite) rows = rows.filter(a=>inSuite(a, suite));
+  if (mSrc) rows = rows.filter(a=>(a.source||"curseforge")===mSrc);
   rows.sort(mCompare);
 
   const card = $("#managedCard");
@@ -6614,20 +6641,20 @@ function render(){
     card.replaceChildren(h("div",{class:"empty"},"Nothing matches this filter."));
   } else {
     const main = [], libs = [];
-    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status") ? libs : main).push(a);
+    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite) ? libs : main).push(a);
     const tb = h("tbody");
     for (const a of main) tb.append(addonRow(a, busy));
     if (libs.length){
-      tb.append(h("tr",{class:"grp",onclick:()=>{ libsOpen=!libsOpen; render(); }}, h("td",{colspan:5}, (libsOpen?"▾ ":"▸ ") + "Libraries ", h("span",{class:"dim"},"("+libs.length+") — shared code other addons need"))));
+      tb.append(h("tr",{class:"grp",onclick:()=>{ libsOpen=!libsOpen; render(); }}, h("td",{colspan:narrow() ? 4 : 5}, (libsOpen?"▾ ":"▸ ") + "Libraries ", h("span",{class:"dim"},"("+libs.length+") — shared code other addons need"))));
       if (libsOpen) for (const a of libs) tb.append(addonRow(a, busy));
     }
     card.replaceChildren(h("table",{}, h("thead",{}, h("tr",{}, sortTh("Addon","name"), sortTh("Installed","installed"), sortTh("Latest for Forever","latest","hide-s"), sortTh("Status","status"), h("th",{}))), tb));
   }
 
   // other folders
-  const un = S.unmanaged, hid = S.hidden_folders || [];
+  const un = suite ? S.unmanaged.filter(g=>inSuite(g, suite)) : mSrc ? [] : S.unmanaged, hid = S.hidden_folders || [];
   $("#unC").textContent = un.length;
-  const showUn = (filter==="all"||filter==="unmanaged") && c.addons_dir_ok;
+  const showUn = (filter==="all"||filter==="unmanaged"||(suite && un.length)) && c.addons_dir_ok && !mSrc;
   $("#unH").style.display = showUn && (un.length || filter==="unmanaged") ? "" : "none";
   $("#unCard").style.display = $("#unH").style.display;
   if (!un.length){
@@ -6654,7 +6681,7 @@ function render(){
     $("#unCard").replaceChildren(h("table",{}, h("thead",{}, h("tr",{}, h("th",{},"Folder / title"), h("th",{},"Version (.toc)"), h("th",{class:"hide-s"},"Interface"), h("th",{}))), tb));
   }
   const hb = $("#hidBox");
-  hb.style.display = showUn ? "" : "none";
+  hb.style.display = showUn && !suite ? "" : "none";
   if (!hid.length) hb.replaceChildren();
   else hb.replaceChildren(h("button",{class:"linkbtn",style:"color:var(--dim)",onclick:()=>{ hidOpen=!hidOpen; render(); }}, (hidOpen?"▾ ":"▸ ") + hid.length + " hidden folder" + (hid.length>1?"s":"") + " you look after yourself"),
     hidOpen ? h("div",{class:"card",style:"margin-top:8px"}, ...hid.map(g=>h("div",{class:"bk"}, h("div",{class:"n"}, h("b",{},g.title), h("span",{class:"dim",style:"margin-left:8px;font-size:12px"}, g.folders.join(", "))), h("button",{class:"btn small",onclick:()=>act("/api/ignore",{folders:g.folders,ignore:false})},"Show again")))) : null);
@@ -7063,10 +7090,13 @@ function setupCard(c){
       : h("div",{}, h("div",{class:"row setupkey",style:"display:flex;gap:8px;max-width:560px;margin:14px auto 0"}, inp, pasteBtn), out, steps,
           h("div",{class:"dim",style:"font-size:12px;margin-top:10px"}, "Each person uses their own free key — it's stored only on this PC. A Wago key (optional) can be pasted here too.")));
 }
+// "Attune-Forever-v16001-44.zip" → "v16001-44", "Books_on_map_Foreverv2.3.2.zip" → "v2.3.2" (full text on hover)
 function shortVer(v){
-  v = String(v||""); const m = v.match(/^[A-Za-z][A-Za-z0-9 '_.]*?[-_ ]+(?=v?\d)/);
-  return m && m[0].length < v.length ? v.slice(m[0].length) : v;
+  v = String(v||"").replace(/\.(zip|rar|7z)$/i, "");
+  const m = v.match(/^[A-Za-z][A-Za-z0-9 '_.-]*?(?:[-_ ]+(?=v?\d)|(?<=[a-z])(?=v\d))/);
+  return m && m[0].length && m[0].length < v.length ? v.slice(m[0].length) : v;
 }
+const narrow = () => matchMedia("(max-width:1050px)").matches;
 function statusCell(a, label, cls){
   const upd = a.update_version && (a.status==="update"||a.status==="update_manual");
   const text = upd ? "Update → " + shortVer(a.update_version) : label;
@@ -7238,14 +7268,13 @@ let uiRestored = false, uiTimer = null;
 function saveUi(){
   if (!uiRestored) return;
   clearTimeout(uiTimer);
-  uiTimer = setTimeout(()=>post("/api/ui_state",{state:{view, filter, msort:MS.by, mdir:MS.dir, bsort:B.sort, bcat:B.cat, asort:A.sort, acat:A.cat}}).catch(()=>{}), 600);
+  uiTimer = setTimeout(()=>post("/api/ui_state",{state:{view, filter, msrc:mSrc, msort:MS.by, mdir:MS.dir, bsort:B.sort, bcat:B.cat, asort:A.sort, acat:A.cat}}).catch(()=>{}), 600);
 }
 function restoreUi(u){
   const okSel = (sel, v) => [...$(sel).options].some(o=>o.value===String(v));
-  if (["status","name","installed","latest","source"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
-  const v = MS.by + (MS.dir !== (MS_DEFAULT_DIR[MS.by]||1) ? ":" + MS.dir : "");
-  $("#msort").value = okSel("#msort", v) ? v : MS.by;
-  if (["all","updates","problems","unmanaged"].includes(u.filter)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
+  if (["status","name","installed","latest"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
+  if (["curseforge","wago","github","tukui"].includes(u.msrc)) mSrc = u.msrc;
+  if (["all","updates","problems","unmanaged"].includes(u.filter) || SUITES.some(su=>u.filter==="suite:"+su.id)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
   if (u.bsort && okSel("#bsort", u.bsort)){ B.sort = String(u.bsort); $("#bsort").value = B.sort; }
   if (u.bcat) B.cat = String(u.bcat);            // the category lists load later and pick these up
   if (u.asort && okSel("#asort", u.asort)){ A.sort = String(u.asort); $("#asort").value = A.sort; }
@@ -7440,7 +7469,8 @@ $("#wsort").addEventListener("change", ()=>{ W.sort = $("#wsort").value; renderB
 $("#bq").addEventListener("keydown", e=>{ if (e.key==="Enter"){ clearTimeout(bTimer); B.q=$("#bq").value.trim(); bSearch(false); } });
 $("#bsort").onchange = ()=>{ B.sort=$("#bsort").value; saveUi(); bSearch(false); };
 $("#bcat").onchange = ()=>{ B.cat=$("#bcat").value; saveUi(); bSearch(false); };
-$("#msort").onchange = ()=>{ const [by, d] = $("#msort").value.split(":"); setSort(by, d ? +d : (MS_DEFAULT_DIR[by]||1)); };
+$("#msrc").onchange = ()=>{ mSrc = $("#msrc").value; saveUi(); render(); };
+let resizeT = null; addEventListener("resize", ()=>{ clearTimeout(resizeT); resizeT = setTimeout(()=>{ if (S) render(); }, 150); });
 $("#bMoreBtn").onclick = ()=>bSearch(true);
 $("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; saveUi(); bSearch(false); });
 $("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; saveUi(); bSearch(false); });
