@@ -173,8 +173,8 @@ def aura(aid, slug, name, game="forever", categories=(), installs=0, stars=0, ve
                   "note": note, "user": user, "timestamp": ts, "desc": f"{name} description"}
 
 
-def wago_addon(wid, slug, name, categories=(), downloads=0):
-    WAGO[wid] = {"id": wid, "slug": slug, "name": name, "display_name": name, "authors": ["WagoAuthor"],
+def wago_addon(wid, slug, name, categories=(), downloads=0, thumb=None):
+    WAGO[wid] = {"id": wid, "slug": slug, "name": name, "display_name": name, "authors": ["WagoAuthor"], "thumbnail_image": thumb,
                  "website_url": f"https://addons.wago.io/addons/{slug}", "rr": {},
                  "categories": [{"id": i, "display_name": c} for i, c in enumerate(categories)], "download_count": downloads}
 
@@ -231,6 +231,8 @@ class H(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        if self.path.startswith("/slowimg"):   # an icon server that never finishes
+            time.sleep(25); return self.send_json(404, {})
         u = urllib.parse.urlsplit(self.path)
         q = urllib.parse.parse_qs(u.query)
         p = urllib.parse.unquote(u.path)
@@ -403,14 +405,14 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(404, {"message": "not found"})
             res = [a for a in WAGO.values() if rr_of(a) or LEAKY_SEARCH]
             res.sort(key=lambda a: -a["download_count"])
-            return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count")} for a in res]})
+            return self.send_json(200, {"data": [{k: a.get(k) for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count", "thumbnail_image")} for a in res]})
         if p == "/wago/api/external/addons/_search":
             qq = (q.get("query") or [""])[0].lower()
-            return self.send_json(200, {"data": [{k: a[k] for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count")}
+            return self.send_json(200, {"data": [{k: a.get(k) for k in ("id", "slug", "name", "display_name", "website_url", "categories", "download_count", "thumbnail_image")}
                                                  for a in WAGO.values() if qq in a["name"].lower() and (rr_of(a) or LEAKY_SEARCH)]})
         if p == "/wago/api/external/addons/_recents" and method == "POST":
             return self.send_json(200, {"addons": {i: {"name": WAGO[i]["name"], "website_url": WAGO[i]["website_url"],
-                                                       "recent_releases": rr_of(WAGO[i])} for i in body.get("addons", []) if i in WAGO}})
+                                                       "thumbnail_image": WAGO[i].get("thumbnail_image"), "recent_releases": rr_of(WAGO[i])} for i in body.get("addons", []) if i in WAGO}})
         ident = urllib.parse.unquote(p.split("/")[-1])
         a = WAGO.get(ident) or next((x for x in WAGO.values() if x["slug"] == ident), None)
         if not a:

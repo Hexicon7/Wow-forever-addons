@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.15.0"
+APP_VERSION = "3.15.1"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -3496,6 +3496,8 @@ class Manager:
                         r.pop("wago", None)   # same slug, different addon
                         continue
                     r["wago"]["url"] = payload.get("website_url") or r["wago"].get("url")
+                    if payload.get("thumbnail_image"):
+                        r["wago"]["logo"] = payload["thumbnail_image"]   # used when CurseForge has no icon
                     r["wago_latest"] = Wago.pick_release(payload, channel)
                     if is_wago_key(k):
                         r["latest_checked_at"] = time.time()
@@ -3535,6 +3537,12 @@ class Manager:
             rec = wg.recents(list({*link.values(), *(str(a["id"]) for a in hits)})) if (link or hits) else {}
         except UserError:
             rec = {}
+        # no icon on CurseForge? use Wago's
+        wlogo = {str(a["id"]): a.get("thumbnail_image") for a in hits if a.get("thumbnail_image")}
+        for r in results:
+            wid = link.get(r["id"])
+            if wid and not r.get("logo"):
+                r["logo"] = wlogo.get(wid) or (rec.get(wid) or {}).get("thumbnail_image") or ""
         channel = self.store.config.get("channel", "release")
         allowed = {"release": ("stable",), "beta": ("stable", "beta"), "alpha": ("stable", "beta", "alpha")}.get(channel, ("stable",))
 
@@ -4997,7 +5005,8 @@ class Manager:
             newest = self.newest_available(r)
             managed.append({
                 "key": k, "name": r.get("name") or toc.get("title") or k,
-                "url": r.get("url") or f"https://www.curseforge.com/projects/{k}", "logo": r.get("logo"),
+                "url": r.get("url") or f"https://www.curseforge.com/projects/{k}",
+                "logo": r.get("logo") or (r.get("wago") or {}).get("logo") or "",
                 "authors": r.get("authors") or [], "summary": r.get("summary"),
                 "installed_version": r.get("installed_version") or toc.get("version"),
                 "installed_file_id": r.get("installed_file_id"),
@@ -5879,6 +5888,7 @@ PAGE_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WoW Forever Addons</title>
 <link rel="icon" type="image/png" href="/favicon.png">
+<link rel="preconnect" href="https://media.forgecdn.net">
 <style>
 :root{
   --bg:#0e1014; --side:#0b0d10; --panel:#151820; --panel2:#1b1f28; --hover:#1d222c; --line:#242a34; --line2:#30374a;
@@ -6045,6 +6055,8 @@ tr.grp:hover td{color:var(--text)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
 .res{display:flex;gap:14px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);cursor:pointer;transition:border-color .12s,background .12s;min-height:112px}
 .res:hover{border-color:#3a4252;background:#171b23}
+/* see-through icons drawn in black (e.g. MinimapButtonButton) get a lighter backdrop so they stay visible */
+img.logo{background:radial-gradient(circle at 50% 40%,#4a515e,#2b3039)}
 .res .logo{width:52px;height:52px;border-radius:11px}
 .res .body{flex:1;min-width:0;display:flex;flex-direction:column}
 .res .t{font-weight:650;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -6489,12 +6501,22 @@ function fmtSize(b){ if(!b) return ""; return b>=1048576 ? (b/1048576).toFixed(1
 // Browse / the detail panel showing the same icon must not take it away from the list (or vice versa).
 const logoCache = new Map();
 let logoTick = 0, logoTickQueued = false;
+// An icon that starts loading but never finishes (slow or stuck image server) shows the letter instead
+// of an empty box: checked 12 s after it scrolls into view.
+const logoWatch = "IntersectionObserver" in window ? new IntersectionObserver(es=>{
+  for (const e of es){
+    if (!e.isIntersecting) continue;
+    const img = e.target; logoWatch.unobserve(img);
+    setTimeout(()=>{ if (img.isConnected && (!img.complete || !img.naturalWidth)){ img.dataset.bad = "1"; img.replaceWith(img._fb()); } }, 12000);
+  }
+}) : null;
+function watchLogo(img, fb){ if (!logoWatch) return; img._fb = fb; img.addEventListener("load", ()=>logoWatch.unobserve(img), {once:true}); logoWatch.observe(img); }
 function hueOf(name){ let x = 0; for (const ch of String(name||"")) x = (x*31 + ch.charCodeAt(0)) >>> 0; return x % 360; }
 function logoEl(src, name, cls, reuse){
   const fb=()=>h("div",{class:(cls||"logo")+" fb",style:"--hue:"+hueOf(name)},((name||"?").replace(/^[^A-Za-z0-9]+/,"")||"?")[0].toUpperCase());
   if (!src) return fb();
-  const make = ()=>h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
-    onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }});
+  const make = ()=>{ const img = h("img",{class:cls||"logo",src,alt:"",loading:"lazy",decoding:"async",referrerpolicy:"no-referrer",
+    onerror:function(){ this.dataset.bad = "1"; this.replaceWith(fb()); }}); watchLogo(img, fb); return img; };
   if (!reuse) return make();
   if (!logoTickQueued){ logoTickQueued = true; queueMicrotask(()=>{ logoTick++; logoTickQueued = false; }); }
   const key = (cls||"logo") + "|" + src;
