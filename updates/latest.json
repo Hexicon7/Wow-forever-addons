@@ -1,7 +1,7 @@
 {
-  "version": "3.16.0",
-  "file": "WoWForeverAddons-Setup-3.16.0.exe",
-  "sha256": "13b402c5381d63c5c91247719a5e238924caecb533f92c207a6aef178e41cac3",
-  "size": 5618688,
-  "notes": "Lua errors from BugGrabber per addon: a small red line and an 'Errors' chip, with copy / update / revert / ignore \u2014 'Errors since this update' offers going back. An 'Unused' chip shows addons switched off on every character. Nothing pops up by itself."
+  "version": "3.17.0",
+  "file": "WoWForeverAddons-Setup-3.17.0.exe",
+  "sha256": "d05286dc1dc8a6dcdf3878d98e3e89900b01be36aa3009a8ae9dad6e1201d690",
+  "size": 5636096,
+  "notes": "Backups: 'Export everything' (addons + all their settings, keybinds, macros and hand-installed addons in one file) and 'Restore from file\u2026' for a new PC. Optional sync folder (OneDrive/Dropbox) keeps two PCs in step \u2014 the other PC offers to restore, nothing happens by itself. Lua-errors dialog: 'Report \u2197' opens the addon's bug tracker with the errors filled in."
 }

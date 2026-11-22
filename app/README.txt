@@ -77,7 +77,17 @@ EVERYDAY USE
   the version before ("Errors since this update") or ignore them until new
   ones show up. Nothing pops up by itself.
 * Unused: addons switched off on every character get an "Unused" chip, so
-  you can remove what you don't use. The program remembers the tab,
+  you can remove what you don't use.
+* Report: the Lua-errors dialog has "Report ↗", which opens the addon's bug
+  tracker (a filled-in GitHub issue when the addon is on GitHub; otherwise
+  the errors are copied so you can paste them).
+* Move or sync your setup (Backups tab): "Export everything" makes one file
+  with your addon list, every addon's settings, keybinds and macros, and
+  hand-installed addons. "Restore from file…" on another PC copies the
+  settings and installs the addons (nothing is removed; current settings are
+  backed up first). Set a sync folder (inside OneDrive, Dropbox or Google
+  Drive) and each PC saves its setup there when something changes; the other
+  PC shows a small dot on Backups and offers to restore it. The program remembers the tab,
   sorting and filters you used last.
 * Shortcuts: Ctrl+1..5 switch tabs, Ctrl+F searches, Esc closes things.
 * Pin keeps an addon at its current version. Remove deletes its folders.

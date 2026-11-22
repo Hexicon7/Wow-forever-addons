@@ -208,6 +208,14 @@ img.logo{background:radial-gradient(circle at 50% 40%,#4a515e,#2b3039)}
 .mxwrap{overflow:auto;max-height:calc(100vh - 230px)}
 .mxwrap thead th{position:sticky;top:0;z-index:2}
 .mxwrap thead th:first-child{z-index:3}
+.setupc{padding:16px 18px;margin-bottom:16px;display:grid;gap:14px}
+.setupc .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.setupc .row > div:first-child{flex:1;min-width:260px}
+.setupc .muted{font-size:12.5px;margin-top:3px}
+#fSync{width:300px;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:9px 11px;font:inherit}
+#fSync:focus{outline:2px solid #e3b75a44;border-color:var(--gold)}
+.syncoffer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #6aa6ff55;background:#6aa6ff10;border-radius:10px;padding:10px 12px}
+.tab .newdot{width:7px;height:7px;border-radius:50%;background:#6aa6ff;margin-left:auto}
 .bk{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
 .bk:last-child{border-bottom:0}
 .bk .n{flex:1;font-variant-numeric:tabular-nums}
@@ -415,6 +423,14 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 
       <div id="vBackups" class="view" hidden>
         <p class="muted" style="margin:0 0 14px;max-width:820px">Every addon keeps its settings (profiles, Questie progress, bars…) in your <b>WTF</b> folder, not in AddOns. A copy is saved automatically before addons are installed, updated or removed (at most once per 10 minutes). Restoring needs WoW to be closed.</p>
+        <div class="card setupc">
+          <div class="row"><div><b>Your whole setup in one file</b><div class="muted">Your addon list (they're downloaded again from their sites), every addon's settings, keybinds and macros, and hand-installed addons. For a new PC or a fresh WoW install — it holds your own settings, so keep it to yourself (to send a friend just the addon list, use ⋯ → “Share / move my list” in My addons).</div></div>
+            <button class="btn" id="bSetupExport">Export everything</button><button class="btn" id="bSetupRestore">Restore from file…</button></div>
+          <div class="row"><div><b>Keep two PCs in step</b><div class="muted">Pick a folder that OneDrive, Dropbox or Google Drive syncs. This PC saves its setup there when something changes (not while WoW runs); the other PC offers to restore it — nothing happens by itself.</div></div>
+            <input id="fSync" placeholder="e.g. C:\Users\you\OneDrive\WoW Forever" spellcheck="false"><button class="btn" id="bSyncSave">Save</button></div>
+          <div id="syncStatus" class="muted" style="margin:0"></div>
+          <div id="syncOffer"></div>
+        </div>
         <div class="bar"><span class="sp"></span><button class="btn small" id="bBackupNow">Back up now</button></div>
         <div class="card" id="bkList"></div>
       </div>
@@ -473,6 +489,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 </div></div>
 
 <input type="file" id="file" accept=".zip,application/zip" hidden>
+<input type="file" id="fileSetup" accept=".zip,application/zip" hidden>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 <a id="bExport" href="/api/export" download hidden>Export</a>
 
@@ -1341,9 +1358,29 @@ function renderBrowse(){
 }
 
 // ---------- backups / changelog / diagnostics ----------
+// a small dot on Backups when another PC's setup is newer — no popup
+function renderSyncDot(){
+  const tab = document.querySelector(".tab[data-v='backups']"); if (!tab) return;
+  const want = !!S.sync_offer, has = tab.querySelector(".newdot");
+  if (want && !has) tab.append(h("span",{class:"newdot",title:"A newer setup from another PC is in your sync folder"}));
+  if (!want && has) has.remove();
+}
 function renderBackups(){
+  renderSyncDot();
   if ($("#vBackups").hidden) return;
   const busy = S.job.running;
+  if (document.activeElement !== $("#fSync") && $("#fSync").dataset.v !== S.config.sync_dir){ $("#fSync").value = S.config.sync_dir; $("#fSync").dataset.v = S.config.sync_dir; }
+  $("#bSetupExport").disabled = $("#bSetupRestore").disabled = busy;
+  $("#bSetupExport").textContent = S.config.sync_dir_ok ? "Save to sync folder now" : "Export everything";
+  $("#syncStatus").textContent = !S.config.sync_dir ? "" : !S.config.sync_dir_ok ? "⚠ The sync folder can't be found right now."
+    : S.sync_last ? "This PC last saved its setup there " + ago(S.sync_last) + "." : "This PC saves its setup there the next time something changes.";
+  const o = S.sync_offer, ob = $("#syncOffer");
+  if (ob.dataset.k !== JSON.stringify(o) + busy){
+    ob.dataset.k = JSON.stringify(o) + busy;
+    ob.replaceChildren(...(o ? [h("div",{class:"syncoffer"}, h("span",{style:"flex:1"}, h("b",{}, o.computer), " saved a newer setup " + ago(o.created) + (o.addons ? ` (${o.addons} addons)` : "") + "."),
+      h("button",{class:"btn small primary",disabled:busy,onclick:async ()=>{ if (await ask("Restore the setup from " + o.computer + "?", "Copies its addon settings, keybinds and macros here and installs its addons. Nothing is removed, and your current settings are backed up first. WoW must be closed.", "Restore")) act("/api/setup_restore",{file:o.file}); }},"Restore"),
+      h("button",{class:"btn small ghost",onclick:()=>act("/api/sync_dismiss",{computer:o.computer,created:o.created})},"Not now"))] : []));
+  }
   $("#bBackupNow").disabled = busy || !S.wtf_found;
   const box = $("#bkList");
   if (!S.wtf_found){ box.replaceChildren(h("div",{class:"empty"},"No WTF folder yet — it appears after you've logged in to WoW Forever once.")); return; }
@@ -1358,6 +1395,16 @@ async function showChangelog(key){
   $("#mLog").classList.add("show");
   try{ const r = await post("/api/changelog",{key}); $("#clT").textContent = r.title; $("#clB").textContent = r.text; if (r.url) $("#clU").href = r.url; }
   catch(e){ $("#clB").textContent = e.message; }
+}
+// "Report ↗": the addon's bug tracker. GitHub gets a new issue with the errors filled in; anywhere else
+// the errors are copied first so they can be pasted.
+function reportLink(a, text){
+  const target = a.issues_url || a.url; if (!target) return null;
+  const body = "**Addon:** " + a.name + " " + (a.installed_version||"") + "\n**Game:** WoW Forever (interface " + (S.config.interface||"?") + ")\n\n```\n" + text.slice(0, 4000) + "\n```\n\n_Reported from BugGrabber via WoW Forever Addons_";
+  const gh = target.match(/^https:\/\/github\.com\/([^/]+\/[^/#?]+)/i);
+  const href = gh ? `https://github.com/${gh[1]}/issues/new?title=${encodeURIComponent("Lua error: " + (a.errors ? a.errors.message : "").slice(0,120))}&body=${encodeURIComponent(body)}` : target;
+  return h("a",{class:"btn",href,target:"_blank",rel:"noopener",title: gh ? "Opens a new GitHub issue with the errors filled in" : "Copies the errors and opens the addon's page for bug reports — paste them there",
+    onclick:()=>{ if (!gh) navigator.clipboard.writeText(body).then(()=>toast("Errors copied — paste them in the report.")).catch(()=>{}); }}, "Report ↗");
 }
 // Lua errors BugGrabber saved for one addon, with what you can do about them
 async function showErrors(key){
@@ -1374,6 +1421,7 @@ async function showErrors(key){
     a.status==="update" ? h("button",{class:"btn primary",disabled:busy,onclick:()=>{ close(); act("/api/update",{key}); }},"Update to " + shortVer(a.latest_version)) : null,
     a.previous_version ? h("button",{class:"btn" + (a.errors && a.errors.since_update && a.status!=="update" ? " primary" : ""),disabled:busy,title:"Goes back to the version before and pins it",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}).catch(()=>{}); act("/api/revert",{key}); }},"Revert to " + shortVer(a.previous_version)) : null,
     h("button",{class:"btn",onclick:()=>{ navigator.clipboard.writeText(a.name + " " + (a.installed_version||"") + "\n\n" + text).then(()=>toast("Copied.")).catch(()=>{}); }},"Copy"),
+    reportLink(a, text),
     h("button",{class:"btn ghost",title:"Hide these until new ones show up",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}); refresh(true); }},"Ignore"));
 }
 const DGI = {ok:"✔", warn:"!", fail:"✖", info:"i"};
@@ -1666,6 +1714,13 @@ $("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; saveUi(); 
 $("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; saveUi(); bSearch(false); });
 
 $("#bBackupNow").onclick = ()=>act("/api/backup_now");
+$("#bSetupExport").onclick = ()=>act("/api/setup_export");
+$("#bSetupRestore").onclick = ()=>{ $("#fileSetup").value = ""; $("#fileSetup").click(); };
+$("#fileSetup").addEventListener("change", async ()=>{
+  const f = $("#fileSetup").files[0]; if (!f) return;
+  if (await ask("Restore " + f.name + "?", "Copies the addon settings, keybinds and macros in it here and installs its addons. Nothing is removed, and your current settings are backed up first. WoW must be closed.", "Restore")) act("/api/setup_restore", f);
+});
+$("#bSyncSave").onclick = ()=>act("/api/settings",{sync_dir:$("#fSync").value.trim()}).then(r=>{ if (r) toast($("#fSync").value.trim() ? "Sync folder saved." : "Sync turned off."); });
 $("#chReload").onclick = loadChars;
 $("#chAll").onchange = renderChars;
 $("#bShortcut").onclick = ()=>act("/api/shortcuts");

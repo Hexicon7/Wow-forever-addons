@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.16.0"
+APP_VERSION = "3.17.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -196,7 +196,7 @@ def wago_key(wago_id: str) -> str:
 # Fields that hold data from the CurseForge API: kept in memory only, never written to disk.
 CF_FIELDS = ("name", "slug", "url", "summary", "authors", "logo", "library", "distribution_disabled", "latest_file_id",
              "latest_version", "latest_date", "latest_sha1", "latest_release_type", "latest_checked_at", "awaiting",
-             "cf_latest")
+             "cf_latest", "issues_url")
 CF_INSTALLED_FIELDS = ("installed_version", "installed_file_name", "installed_file_date", "installed_release_type")
 AWAIT_SECONDS = 30 * 60
 
@@ -2255,6 +2255,7 @@ class Manager:
             "logo": (mod.get("logo") or {}).get("thumbnailUrl") or "",
             "library": is_library(mod),
             "distribution_disabled": mod.get("allowModDistribution") is False,
+            "issues_url": ((mod.get("links") or {}).get("issuesUrl") or "").strip(),
         })
         repo = github_repo_of(mod)
         if repo and not rec.get("github"):
@@ -2615,6 +2616,187 @@ class Manager:
             finally:
                 rmtree(staging)
         self.log(f"Restored your addon settings from {src.name}.", "ok")
+
+    # -- the whole setup in one file: addons + settings (move to a new PC, or keep two PCs in step) -- #
+    SETUP_PREFIX = "WoWForeverSetup"
+
+    @staticmethod
+    def computer_name() -> str:
+        return re.sub(r"[^A-Za-z0-9_-]", "", os.environ.get("WFAM_COMPUTER") or platform.node() or os.environ.get("COMPUTERNAME") or "PC")[:40] or "PC"
+
+    def _setup_sources(self):
+        """(file on disk, name in the zip) for everything a setup holds besides the addon list."""
+        w = self.wtf_dir()
+        if w and (w / "Account").is_dir():
+            for root, _dirs, files in os.walk(w / "Account"):
+                for fn in files:
+                    low = fn.lower()
+                    if low.endswith((".bak", ".old", ".wfam-tmp")):
+                        continue
+                    fp = Path(root, fn)
+                    yield fp, fp.relative_to(w.parent).as_posix()
+        # hand-installed addons can't be downloaded again, so they go in too (not huge ones)
+        for f in self.unmanaged_folders():
+            files = [p for p in f.rglob("*") if p.is_file()]
+            if sum(p.stat().st_size for p in files) > 60 * 1024 * 1024:
+                continue
+            for fp in files:
+                yield fp, "AddOns/" + fp.relative_to(f.parent).as_posix()
+
+    def write_setup(self, dest: Path) -> dict:
+        info = {"format": 1, "app": APP_VERSION, "created": now_iso(), "computer": self.computer_name(),
+                "share_code": self.share_code(), "addons": len(self.store.addons),
+                "hand_installed": [f.name for f in self.unmanaged_folders()]}
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".part")
+        skipped = 0
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            z.writestr("setup.json", json.dumps(info, indent=1))
+            for fp, arc in self._setup_sources():
+                try:
+                    z.write(fp, arc)
+                except OSError:
+                    skipped += 1
+        os.replace(tmp, dest)
+        info["size"] = dest.stat().st_size
+        info["skipped"] = skipped
+        return info
+
+    def _sync_file(self) -> Path | None:
+        d = (self.store.config.get("sync_dir") or "").strip()
+        return Path(d) / f"{self.SETUP_PREFIX}-{self.computer_name()}.zip" if d and Path(d).is_dir() else None
+
+    def op_setup_export(self):
+        sf = self._sync_file()
+        if sf:
+            dest = sf
+        else:
+            dl = Path(os.environ.get("WFAM_EXPORT_DIR") or (Path.home() / "Downloads"))
+            dest = dl / f"{self.SETUP_PREFIX}-{self.computer_name()}-{time.strftime('%Y%m%d-%H%M')}.zip"
+        info = self.write_setup(dest)
+        if sf:
+            self.store.state["sync_export"] = {"created": info["created"], "sig": self._sync_sig()}
+            self.store.save_state()
+        self.last_export = str(dest)
+        self.log(f"Saved your whole setup ({info['addons']} addons + their settings, {fmt_size(info['size'])}) to {dest}"
+                 + (f" — {info['skipped']} locked file(s) skipped" if info["skipped"] else "") + ".", "ok")
+        if os.name == "nt" and not os.environ.get("WFAM_NO_EXPLORER"):
+            try:
+                subprocess.Popen(["explorer", "/select,", str(dest)])
+            except OSError:
+                pass
+
+    def op_setup_restore(self, raw: bytes | None = None, path: str | None = None):
+        if game_running():
+            raise UserError("Close WoW first — the game rewrites addon settings when you log out.")
+        if path:
+            p = Path(path)
+            d = (self.store.config.get("sync_dir") or "").strip()
+            if not (d and p.parent.resolve() == Path(d).resolve() and p.name.startswith(self.SETUP_PREFIX) and p.is_file()):
+                raise UserError("That setup file isn't in your sync folder.")
+            src = open(p, "rb")
+        else:
+            src = io.BytesIO(raw or b"")
+        addons_dir = self.addons_dir()
+        w = self.wtf_dir()
+        with src, zipfile.ZipFile(src) as z:
+            try:
+                info = json.loads(z.read("setup.json").decode("utf-8"))
+                assert isinstance(info, dict) and info.get("format") == 1
+            except (KeyError, ValueError, AssertionError):
+                raise UserError("That file isn't a WoW Forever Addons setup.")
+            entries = [(i, parts) for i, parts in _safe_entries(z) if not i.is_dir() and parts[0] != "setup.json"]
+            if any(parts[0] not in ("WTF", "AddOns") or (parts[0] == "WTF" and (len(parts) < 3 or parts[1] != "Account"))
+                   for _, parts in entries):
+                raise UserError("That setup file has unexpected content — nothing was changed.")
+            if w and w.is_dir():
+                self.backup_wtf(force=True)     # so the restore can be undone from Backups
+            n_set = n_hand = 0
+            hand_new = {parts[1] for _, parts in entries if parts[0] == "AddOns" and len(parts) > 2
+                        and not (addons_dir / parts[1]).exists()}
+            for i, parts in entries:
+                if parts[0] == "WTF":
+                    target = addons_dir.parent.parent.joinpath(*parts)
+                    n_set += 1
+                elif parts[1] in hand_new:
+                    target = addons_dir.joinpath(*parts[1:])
+                    n_hand += 1
+                else:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".wfam-tmp")
+                with z.open(i) as a, open(tmp, "wb") as b:
+                    shutil.copyfileobj(a, b)
+                os.replace(tmp, target)
+        self.log(f"Restored the settings from {info.get('computer') or 'the setup file'} ({n_set} files)"
+                 + (f" and {len(hand_new)} hand-installed addon(s)" if hand_new else "") + ". Installing its addons…", "ok")
+        seen = self.store.state.setdefault("sync_seen", {})
+        seen[str(info.get("computer"))] = info.get("created")
+        self.store.save_state()
+        if info.get("share_code"):
+            self.op_import(info["share_code"].encode("utf-8"))
+
+    def _sync_sig(self) -> list:
+        """Changes when addon settings or the addon list change (folder times, not every file)."""
+        w = self.wtf_dir()
+        sig = sorted((k, r.get("installed_version")) for k, r in self.store.addons.items())
+        if w and (w / "Account").is_dir():
+            for p in [*(w / "Account").glob("*/SavedVariables"), *(w / "Account").glob("*/*/*")]:
+                try:
+                    if p.is_dir():
+                        sig.append((p.relative_to(w).as_posix(), p.stat().st_mtime_ns))
+                except OSError:
+                    pass
+        return [list(x) for x in sig]
+
+    def sync_tick(self):
+        """Keep this PC's setup file in the sync folder current: only when something changed, not while
+        WoW runs or a task is busy, and at most every 10 minutes. Quiet: one line in the activity log."""
+        sf = self._sync_file()
+        if not sf or self.job.get("running") or game_running():
+            return
+        last = self.store.state.get("sync_export") or {}
+        sig = self._sync_sig()
+        if last.get("sig") == sig and sf.is_file():
+            return
+        try:
+            if last.get("created") and time.time() - datetime.fromisoformat(last["created"]).timestamp() < 600:
+                return
+        except ValueError:
+            pass
+        info = self.write_setup(sf)
+        self.store.state["sync_export"] = {"created": info["created"], "sig": sig}
+        self.store.save_state()
+        self.log(f"Saved your setup to the sync folder ({fmt_size(info['size'])}).")
+
+    def sync_offer(self) -> dict | None:
+        """A newer setup from another PC in the sync folder, if there is one (looked at every 30 s)."""
+        cached = getattr(self, "_sync_offer", None)
+        if cached and time.time() - cached[0] < 30:
+            return cached[1]
+        best = None
+        d = (self.store.config.get("sync_dir") or "").strip()
+        if d and Path(d).is_dir():
+            mine = (self.store.state.get("sync_export") or {}).get("created") or ""
+            seen = self.store.state.get("sync_seen") or {}
+            for f in Path(d).glob(self.SETUP_PREFIX + "-*.zip"):
+                if f.name == f"{self.SETUP_PREFIX}-{self.computer_name()}.zip":
+                    continue
+                try:
+                    with zipfile.ZipFile(f) as z:
+                        info = json.loads(z.read("setup.json").decode("utf-8"))
+                except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+                    continue
+                created, comp = str(info.get("created") or ""), str(info.get("computer") or f.stem)
+                if created > mine and created > str(seen.get(comp) or "") and (not best or created > best["created"]):
+                    best = {"computer": comp, "created": created, "file": str(f), "addons": info.get("addons")}
+        self._sync_offer = (time.time(), best)
+        return best
+
+    def sync_dismiss(self, computer: str, created: str):
+        self.store.state.setdefault("sync_seen", {})[computer] = created
+        self.store.save_state()
+        self._sync_offer = None
 
     # -- previous versions (Revert) ------------------------------------------- #
     def _versions_dir(self, key: str) -> Path:
@@ -5203,6 +5385,7 @@ class Manager:
                 "previous_version": ((r.get("previous") or [{}])[0] or {}).get("installed_version")
                 if r.get("previous") else None,
                 "errors": self._error_summary(r, ins),
+                "issues_url": r.get("issues_url") or (f"https://github.com/{r['github']}/issues" if r.get("github") else ""),
                 "unused": bool(r.get("folders")) and all(f.lower() in ins["unused"] for f in r["folders"]),
             })
         managed.sort(key=lambda a: (a["name"] or "").lower())
@@ -5306,6 +5489,8 @@ class Manager:
                 "self_update_dismissed": cfg.get("self_update_dismissed") or "",
                 "ui_scale": str(cfg.get("ui_scale") or "100"),
                 "ui_state": cfg.get("ui_state") if isinstance(cfg.get("ui_state"), dict) else {},
+                "sync_dir": cfg.get("sync_dir") or "",
+                "sync_dir_ok": bool((cfg.get("sync_dir") or "").strip() and Path(cfg["sync_dir"]).is_dir()),
                 "autostart": autostart_enabled(),
                 "wago_game_version": cfg.get("wago_game_version") or "forever",
                 "downloads_dir": cfg.get("downloads_dir") or "",
@@ -5322,6 +5507,8 @@ class Manager:
                             "page": self.self_update["page"]} if self.self_update else None,
             "last_batch": self._batch_view(recs),
             "hidden_folders": hidden,
+            "sync_offer": self.sync_offer(),
+            "sync_last": (self.store.state.get("sync_export") or {}).get("created") if self._sync_file() else None,
             "game_running": game_running(),
             "backups": self.list_backups(),
             "wtf_found": bool(self.wtf_dir() and self.wtf_dir().is_dir()),
@@ -5472,6 +5659,11 @@ class App:
                 changes["version_type_name"] = body.get("version_type_name", "") if changes["version_type_id"] else ""
             if body.get("channel") in CHANNELS:
                 changes["channel"] = body["channel"]
+            if "sync_dir" in body:
+                v = str(body["sync_dir"] or "").strip().strip('"')
+                if v and not Path(v).is_dir():
+                    raise UserError("That sync folder doesn't exist. Make it first (e.g. inside OneDrive or Dropbox).")
+                changes["sync_dir"] = v
             if "ui_scale" in body:
                 v = str(body["ui_scale"])
                 if v not in ("90", "100", "110", "125", "system", "fit"):
@@ -5677,6 +5869,18 @@ class App:
             return {"ok": True}
         if path == "/api/remove":
             m.run_job("Removing addon", m.op_remove, str(body.get("key")))
+            return {"ok": True}
+        if path == "/api/setup_export":
+            m.run_job("Saving your whole setup", m.op_setup_export)
+            return {"ok": True}
+        if path == "/api/setup_restore":
+            if raw and not body:
+                m.run_job("Restoring a setup", m.op_setup_restore, raw, None)
+            else:
+                m.run_job("Restoring a setup", m.op_setup_restore, None, str(body.get("file") or ""))
+            return {"ok": True}
+        if path == "/api/sync_dismiss":
+            m.sync_dismiss(str(body.get("computer") or ""), str(body.get("created") or ""))
             return {"ok": True}
         if path == "/api/errors":
             key = str(body.get("key"))
@@ -6010,6 +6214,13 @@ class App:
             t.start()
         threading.Thread(target=lambda: self.m._quiet(self.m.tidy_storage), daemon=True).start()
         threading.Thread(target=auto_check, daemon=True).start()
+
+        def sync_loop():
+            tick = float(os.environ.get("WFAM_SYNC_TICK") or 60)
+            while True:
+                time.sleep(tick)
+                self.m._quiet(self.m.sync_tick)
+        threading.Thread(target=sync_loop, daemon=True).start()
         if host_pid:
             def self_update_loop():
                 time.sleep(min(20.0, SELF_UPDATE_EVERY))
@@ -6274,6 +6485,14 @@ img.logo{background:radial-gradient(circle at 50% 40%,#4a515e,#2b3039)}
 .mxwrap{overflow:auto;max-height:calc(100vh - 230px)}
 .mxwrap thead th{position:sticky;top:0;z-index:2}
 .mxwrap thead th:first-child{z-index:3}
+.setupc{padding:16px 18px;margin-bottom:16px;display:grid;gap:14px}
+.setupc .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.setupc .row > div:first-child{flex:1;min-width:260px}
+.setupc .muted{font-size:12.5px;margin-top:3px}
+#fSync{width:300px;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:9px 11px;font:inherit}
+#fSync:focus{outline:2px solid #e3b75a44;border-color:var(--gold)}
+.syncoffer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #6aa6ff55;background:#6aa6ff10;border-radius:10px;padding:10px 12px}
+.tab .newdot{width:7px;height:7px;border-radius:50%;background:#6aa6ff;margin-left:auto}
 .bk{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
 .bk:last-child{border-bottom:0}
 .bk .n{flex:1;font-variant-numeric:tabular-nums}
@@ -6481,6 +6700,14 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 
       <div id="vBackups" class="view" hidden>
         <p class="muted" style="margin:0 0 14px;max-width:820px">Every addon keeps its settings (profiles, Questie progress, bars…) in your <b>WTF</b> folder, not in AddOns. A copy is saved automatically before addons are installed, updated or removed (at most once per 10 minutes). Restoring needs WoW to be closed.</p>
+        <div class="card setupc">
+          <div class="row"><div><b>Your whole setup in one file</b><div class="muted">Your addon list (they're downloaded again from their sites), every addon's settings, keybinds and macros, and hand-installed addons. For a new PC or a fresh WoW install — it holds your own settings, so keep it to yourself (to send a friend just the addon list, use ⋯ → “Share / move my list” in My addons).</div></div>
+            <button class="btn" id="bSetupExport">Export everything</button><button class="btn" id="bSetupRestore">Restore from file…</button></div>
+          <div class="row"><div><b>Keep two PCs in step</b><div class="muted">Pick a folder that OneDrive, Dropbox or Google Drive syncs. This PC saves its setup there when something changes (not while WoW runs); the other PC offers to restore it — nothing happens by itself.</div></div>
+            <input id="fSync" placeholder="e.g. C:\Users\you\OneDrive\WoW Forever" spellcheck="false"><button class="btn" id="bSyncSave">Save</button></div>
+          <div id="syncStatus" class="muted" style="margin:0"></div>
+          <div id="syncOffer"></div>
+        </div>
         <div class="bar"><span class="sp"></span><button class="btn small" id="bBackupNow">Back up now</button></div>
         <div class="card" id="bkList"></div>
       </div>
@@ -6539,6 +6766,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 </div></div>
 
 <input type="file" id="file" accept=".zip,application/zip" hidden>
+<input type="file" id="fileSetup" accept=".zip,application/zip" hidden>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 <a id="bExport" href="/api/export" download hidden>Export</a>
 
@@ -7407,9 +7635,29 @@ function renderBrowse(){
 }
 
 // ---------- backups / changelog / diagnostics ----------
+// a small dot on Backups when another PC's setup is newer — no popup
+function renderSyncDot(){
+  const tab = document.querySelector(".tab[data-v='backups']"); if (!tab) return;
+  const want = !!S.sync_offer, has = tab.querySelector(".newdot");
+  if (want && !has) tab.append(h("span",{class:"newdot",title:"A newer setup from another PC is in your sync folder"}));
+  if (!want && has) has.remove();
+}
 function renderBackups(){
+  renderSyncDot();
   if ($("#vBackups").hidden) return;
   const busy = S.job.running;
+  if (document.activeElement !== $("#fSync") && $("#fSync").dataset.v !== S.config.sync_dir){ $("#fSync").value = S.config.sync_dir; $("#fSync").dataset.v = S.config.sync_dir; }
+  $("#bSetupExport").disabled = $("#bSetupRestore").disabled = busy;
+  $("#bSetupExport").textContent = S.config.sync_dir_ok ? "Save to sync folder now" : "Export everything";
+  $("#syncStatus").textContent = !S.config.sync_dir ? "" : !S.config.sync_dir_ok ? "⚠ The sync folder can't be found right now."
+    : S.sync_last ? "This PC last saved its setup there " + ago(S.sync_last) + "." : "This PC saves its setup there the next time something changes.";
+  const o = S.sync_offer, ob = $("#syncOffer");
+  if (ob.dataset.k !== JSON.stringify(o) + busy){
+    ob.dataset.k = JSON.stringify(o) + busy;
+    ob.replaceChildren(...(o ? [h("div",{class:"syncoffer"}, h("span",{style:"flex:1"}, h("b",{}, o.computer), " saved a newer setup " + ago(o.created) + (o.addons ? ` (${o.addons} addons)` : "") + "."),
+      h("button",{class:"btn small primary",disabled:busy,onclick:async ()=>{ if (await ask("Restore the setup from " + o.computer + "?", "Copies its addon settings, keybinds and macros here and installs its addons. Nothing is removed, and your current settings are backed up first. WoW must be closed.", "Restore")) act("/api/setup_restore",{file:o.file}); }},"Restore"),
+      h("button",{class:"btn small ghost",onclick:()=>act("/api/sync_dismiss",{computer:o.computer,created:o.created})},"Not now"))] : []));
+  }
   $("#bBackupNow").disabled = busy || !S.wtf_found;
   const box = $("#bkList");
   if (!S.wtf_found){ box.replaceChildren(h("div",{class:"empty"},"No WTF folder yet — it appears after you've logged in to WoW Forever once.")); return; }
@@ -7424,6 +7672,16 @@ async function showChangelog(key){
   $("#mLog").classList.add("show");
   try{ const r = await post("/api/changelog",{key}); $("#clT").textContent = r.title; $("#clB").textContent = r.text; if (r.url) $("#clU").href = r.url; }
   catch(e){ $("#clB").textContent = e.message; }
+}
+// "Report ↗": the addon's bug tracker. GitHub gets a new issue with the errors filled in; anywhere else
+// the errors are copied first so they can be pasted.
+function reportLink(a, text){
+  const target = a.issues_url || a.url; if (!target) return null;
+  const body = "**Addon:** " + a.name + " " + (a.installed_version||"") + "\n**Game:** WoW Forever (interface " + (S.config.interface||"?") + ")\n\n```\n" + text.slice(0, 4000) + "\n```\n\n_Reported from BugGrabber via WoW Forever Addons_";
+  const gh = target.match(/^https:\/\/github\.com\/([^/]+\/[^/#?]+)/i);
+  const href = gh ? `https://github.com/${gh[1]}/issues/new?title=${encodeURIComponent("Lua error: " + (a.errors ? a.errors.message : "").slice(0,120))}&body=${encodeURIComponent(body)}` : target;
+  return h("a",{class:"btn",href,target:"_blank",rel:"noopener",title: gh ? "Opens a new GitHub issue with the errors filled in" : "Copies the errors and opens the addon's page for bug reports — paste them there",
+    onclick:()=>{ if (!gh) navigator.clipboard.writeText(body).then(()=>toast("Errors copied — paste them in the report.")).catch(()=>{}); }}, "Report ↗");
 }
 // Lua errors BugGrabber saved for one addon, with what you can do about them
 async function showErrors(key){
@@ -7440,6 +7698,7 @@ async function showErrors(key){
     a.status==="update" ? h("button",{class:"btn primary",disabled:busy,onclick:()=>{ close(); act("/api/update",{key}); }},"Update to " + shortVer(a.latest_version)) : null,
     a.previous_version ? h("button",{class:"btn" + (a.errors && a.errors.since_update && a.status!=="update" ? " primary" : ""),disabled:busy,title:"Goes back to the version before and pins it",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}).catch(()=>{}); act("/api/revert",{key}); }},"Revert to " + shortVer(a.previous_version)) : null,
     h("button",{class:"btn",onclick:()=>{ navigator.clipboard.writeText(a.name + " " + (a.installed_version||"") + "\n\n" + text).then(()=>toast("Copied.")).catch(()=>{}); }},"Copy"),
+    reportLink(a, text),
     h("button",{class:"btn ghost",title:"Hide these until new ones show up",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}); refresh(true); }},"Ignore"));
 }
 const DGI = {ok:"✔", warn:"!", fail:"✖", info:"i"};
@@ -7732,6 +7991,13 @@ $("#acat").addEventListener("change", ()=>{ A.cat = $("#acat").value; saveUi(); 
 $("#asort").addEventListener("change", ()=>{ A.sort = $("#asort").value; saveUi(); bSearch(false); });
 
 $("#bBackupNow").onclick = ()=>act("/api/backup_now");
+$("#bSetupExport").onclick = ()=>act("/api/setup_export");
+$("#bSetupRestore").onclick = ()=>{ $("#fileSetup").value = ""; $("#fileSetup").click(); };
+$("#fileSetup").addEventListener("change", async ()=>{
+  const f = $("#fileSetup").files[0]; if (!f) return;
+  if (await ask("Restore " + f.name + "?", "Copies the addon settings, keybinds and macros in it here and installs its addons. Nothing is removed, and your current settings are backed up first. WoW must be closed.", "Restore")) act("/api/setup_restore", f);
+});
+$("#bSyncSave").onclick = ()=>act("/api/settings",{sync_dir:$("#fSync").value.trim()}).then(r=>{ if (r) toast($("#fSync").value.trim() ? "Sync folder saved." : "Sync turned off."); });
 $("#chReload").onclick = loadChars;
 $("#chAll").onchange = renderChars;
 $("#bShortcut").onclick = ()=>act("/api/shortcuts");
