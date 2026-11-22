@@ -70,7 +70,14 @@ EVERYDAY USE
   next to the search box shows only CurseForge, Wago, GitHub or tukui.org
   addons. If you use ElvUI, Tukui or EllesmereUI, the "UI" chip next to
   "Other folders" shows them and their plugins, grouped per UI. Right-click
-  an addon for the same menu as its ⋯ button. The program remembers the tab,
+  an addon for the same menu as its ⋯ button.
+* Lua errors: if you use BugGrabber/BugSack, an addon whose current version
+  has thrown errors (last 14 days) gets a small red line and an "Errors"
+  chip appears. Click it to see the errors, copy them, update, revert to
+  the version before ("Errors since this update") or ignore them until new
+  ones show up. Nothing pops up by itself.
+* Unused: addons switched off on every character get an "Unused" chip, so
+  you can remove what you don't use. The program remembers the tab,
   sorting and filters you used last.
 * Shortcuts: Ctrl+1..5 switch tabs, Ctrl+F searches, Esc closes things.
 * Pin keeps an addon at its current version. Remove deletes its folders.

@@ -59,7 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "WoW Forever Addon Manager"
-APP_VERSION = "3.15.1"
+APP_VERSION = "3.16.0"
 API_BASE = os.environ.get("WFAM_API_BASE", "https://api.curseforge.com").rstrip("/")
 GITHUB_API = os.environ.get("WFAM_GITHUB_API", "https://api.github.com").rstrip("/")
 TUKUI_API = os.environ.get("WFAM_TUKUI_API", "https://api.tukui.org/v1").rstrip("/")   # ElvUI and Tukui
@@ -1920,6 +1920,113 @@ def parse_addons_txt(path: Path) -> dict[str, str]:
                 out[m.group(1).lower()] = m.group(2).lower()
     except OSError:
         pass
+    return out
+
+
+# -- reading SavedVariables (BugGrabber's error list) ------------------------------- #
+_LUA_TOK = re.compile(r'\s+|--\[(=*)\[.*?\]\1\]|--[^\n]*|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|\[\[.*?\]\]'
+                      r'|-?0x[0-9a-fA-F]+|-?\d+\.?\d*(?:[eE][-+]?\d+)?|[A-Za-z_][\w.]*|[{}\[\]=,;]', re.S)
+_LUA_ESC = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "\n": "\n"}
+
+
+def _lua_unquote(t: str) -> str:
+    if t.startswith("[["):
+        return t[2:-2]
+    body = t[1:-1]
+    return re.sub(r'\\(\d{1,3}|.)', lambda m: chr(int(m.group(1)) % 256) if m.group(1).isdigit()
+                  else _LUA_ESC.get(m.group(1), m.group(1)), body, flags=re.S)
+
+
+def parse_lua_sv(text: str) -> dict:
+    """The small part of Lua that SavedVariables files use: NAME = value, with tables, strings, numbers,
+    true/false/nil. Anything it can't read ends the parse; what was read so far is returned."""
+    toks = [m.group(0) for m in _LUA_TOK.finditer(text) if not m.group(0).isspace() and not m.group(0).startswith("--")]
+    pos = 0
+
+    def val():
+        nonlocal pos
+        t = toks[pos]; pos += 1
+        if t == "{":
+            tbl, arr = {}, []
+            while toks[pos] != "}":
+                if toks[pos] == "[":
+                    pos += 1; k = val(); pos += 1          # ]
+                    pos += 1                               # =
+                    tbl[k] = val()
+                elif pos + 1 < len(toks) and toks[pos + 1] == "=" and re.fullmatch(r"[A-Za-z_]\w*", toks[pos]):
+                    k = toks[pos]; pos += 2; tbl[k] = val()
+                else:
+                    arr.append(val())
+                if toks[pos] in (",", ";"):
+                    pos += 1
+            pos += 1
+            if arr and not tbl:
+                return arr
+            for n, v in enumerate(arr, 1):
+                tbl.setdefault(n, v)
+            return tbl
+        if t[0] in "\"'" or t.startswith("[["):
+            return _lua_unquote(t)
+        if t in ("true", "false"):
+            return t == "true"
+        if t == "nil":
+            return None
+        try:
+            return int(t, 0) if re.fullmatch(r"-?(0x[0-9a-fA-F]+|\d+)", t) else float(t)
+        except ValueError:
+            raise ValueError(f"unexpected {t[:20]}")
+
+    out = {}
+    try:
+        while pos < len(toks):
+            name = toks[pos]
+            if toks[pos + 1] != "=":
+                break
+            pos += 2
+            out[name] = val()
+    except (IndexError, ValueError):
+        pass
+    return out
+
+
+_ERR_PATH = re.compile(r'(?:Interface[\\/]+Add[Oo]ns[\\/]+)?([^\\/:\s"\'\[\]()<>]+)[\\/][^:\n"\]]*?\.(?:lua|xml)\b', re.I)
+
+
+def bug_errors(wtf: Path | None, folders: set, days: int = 14) -> dict:
+    """Lua errors BugGrabber saved, per AddOns folder (lower-case): newest first, last `days` days only."""
+    out: dict[str, list] = {}
+    if not wtf or not (wtf / "Account").is_dir():
+        return out
+    cutoff = time.time() - days * 86400
+    for f in (wtf / "Account").glob("*/SavedVariables/!BugGrabber.lua"):
+        try:
+            if f.stat().st_size > 8_000_000:
+                continue
+            db = parse_lua_sv(f.read_text("utf-8", errors="replace")).get("BugGrabberDB") or {}
+        except OSError:
+            continue
+        errs = db.get("errors") or []
+        if isinstance(errs, dict):
+            errs = [errs[k] for k in sorted(k for k in errs if isinstance(k, int))]
+        for e in errs:
+            if not isinstance(e, dict):
+                continue
+            msg, stack = str(e.get("message") or ""), str(e.get("stack") or "")
+            try:
+                ts = time.mktime(time.strptime(str(e.get("time") or ""), "%Y/%m/%d %H:%M:%S"))
+            except (ValueError, OverflowError):
+                ts = 0
+            if ts and ts < cutoff:
+                continue
+            folder = next((m.group(1).lower() for m in _ERR_PATH.finditer(msg + "\n" + stack)
+                           if m.group(1).lower() in folders), None)
+            if not folder:
+                continue
+            n = e.get("counter")
+            out.setdefault(folder, []).append({"message": msg[:600], "stack": stack[:1500], "time": ts,
+                                               "count": n if isinstance(n, int) and n > 0 else 1})
+    for v in out.values():
+        v.sort(key=lambda x: -x["time"])
     return out
 
 
@@ -4972,8 +5079,68 @@ class Manager:
             self.log(f"WoW Forever now reports interface {found} (was {old}) — addons are checked against that.")
         return found
 
+    def insights(self) -> dict:
+        """Lua errors BugGrabber saved (per AddOns folder) and folders that are off on every character.
+        Read again only when those files or the AddOns folder change, and at most every 20 s."""
+        cached = getattr(self, "_ins", None)
+        now = time.time()
+        if cached and now - cached[0] < 20:
+            return cached[2]
+        w = self.wtf_dir()
+        d = self.store.config.get("addons_dir") or ""
+        try:
+            folders = sorted(p.name.lower() for p in Path(d).iterdir() if p.is_dir()) if d and Path(d).is_dir() else []
+        except OSError:
+            folders = []
+        sig = [len(folders), hash(tuple(folders))]
+        if w and (w / "Account").is_dir():
+            for f in [*(w / "Account").glob("*/SavedVariables/!BugGrabber.lua"), *(w / "Account").glob("*/*/*/AddOns.txt")]:
+                try:
+                    sig.append((str(f), f.stat().st_mtime_ns))
+                except OSError:
+                    pass
+        if cached and cached[1] == sig:
+            self._ins = (now, sig, cached[2])
+            return cached[2]
+        data = {"errors": {}, "unused": set()}
+        try:
+            data["errors"] = bug_errors(w, set(folders))
+            ch = self.characters()
+            if any(c["has_file"] for c in ch["characters"]):
+                data["unused"] = {row["folder"].lower() for row in ch["addons"] if row["on"] and not any(row["on"])}
+        except Exception:
+            pass
+        self._ins = (now, sig, data)
+        return data
+
+    @staticmethod
+    def _installed_ts(r: dict) -> float:
+        try:
+            return datetime.fromisoformat(str(r.get("installed_at"))).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _error_summary(self, r: dict, ins: dict) -> dict | None:
+        errs = self.errors_of(r, ins)
+        if not errs:
+            return None
+        inst = self._installed_ts(r)
+        after = errs if inst else []
+        before = [e for e in self.errors_of(r, ins, everything=True) if inst and inst - 7 * 86400 < e["time"] < inst]
+        return {"n": sum(e["count"] for e in errs), "last": errs[0]["time"],
+                "message": errs[0]["message"].split("\n")[0][:160],
+                # it started with the version you just got: worth offering to go back
+                "since_update": bool(after) and not before and bool(r.get("previous"))}
+
+    def errors_of(self, r: dict, ins: dict, everything: bool = False) -> list:
+        """Errors of the version you have now (not older ones), minus those you chose to ignore."""
+        cut = 0.0 if everything else max(float(r.get("errors_ok_at") or 0), self._installed_ts(r))
+        out = [e for f in r.get("folders") or [] for e in ins["errors"].get(f.lower(), []) if e["time"] > cut or (not e["time"] and not cut)]
+        return sorted(out, key=lambda e: -e["time"])
+
     def snapshot(self, since: int = 0) -> dict:
         found = self.follow_game_interface()
+        ins = self.insights()
         cfg = self.store.config
         key = cfg.get("api_key") or ""
         d = cfg.get("addons_dir") or ""
@@ -5035,6 +5202,8 @@ class Manager:
                 "compat": compat, "toc_file": toc.get("toc") or "", "missing_deps": missing, "deps": needs[:20],
                 "previous_version": ((r.get("previous") or [{}])[0] or {}).get("installed_version")
                 if r.get("previous") else None,
+                "errors": self._error_summary(r, ins),
+                "unused": bool(r.get("folders")) and all(f.lower() in ins["unused"] for f in r["folders"]),
             })
         managed.sort(key=lambda a: (a["name"] or "").lower())
 
@@ -5508,6 +5677,21 @@ class App:
             return {"ok": True}
         if path == "/api/remove":
             m.run_job("Removing addon", m.op_remove, str(body.get("key")))
+            return {"ok": True}
+        if path == "/api/errors":
+            key = str(body.get("key"))
+            r = m.store.addons.get(key)
+            if not r:
+                raise UserError("Unknown addon.")
+            return {"name": r.get("name") or key, "errors": m.errors_of(r, m.insights())[:10]}
+        if path == "/api/errors_ignore":
+            key = str(body.get("key"))
+            with m.store.lock:
+                r = m.store.addons.get(key)
+                if not r:
+                    raise UserError("Unknown addon.")
+                r["errors_ok_at"] = time.time()
+            m.store.save_state()
             return {"ok": True}
         if path == "/api/pin":
             m.run_job("Pin", m.op_set_pin, str(body.get("key")), bool(body.get("pinned")))
@@ -5986,6 +6170,11 @@ th .ar{font-size:10px;margin-left:4px}
 #msrc{max-width:170px}
 .stat.suite{border-style:dashed}
 .stat.suite.on{border-style:solid}
+.errl{display:block;margin-top:5px;background:none;border:0;padding:0;color:var(--red);font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.errl:hover{text-decoration:underline}
+.stat.err b{color:var(--red)}
+.errbox{white-space:pre-wrap;font:12px/1.45 ui-monospace,Consolas,monospace;background:#0e1015;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;max-height:none}
+.errbox .eh{font-family:inherit;color:var(--gold2);margin-bottom:4px}
 tr.grp.head td{cursor:default;color:var(--gold2);background:#151821}
 .gamepill{display:inline-flex;align-items:center;gap:7px;border:1px solid #e8a43c55;background:#e8a43c12;color:#f3c983;border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:help}
 .gamepill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber)}
@@ -6356,7 +6545,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 <div class="modal" id="mLog"><div class="dlg" style="max-width:720px">
   <h3 id="clT">What's new</h3><p class="sub"><a id="clU" target="_blank" rel="noopener">Open on the web ↗</a></p>
   <div class="cl" id="clB">Loading…</div>
-  <div class="foot"><button class="btn" id="clClose">Close</button></div>
+  <div class="foot"><span id="clAct" style="display:flex;gap:8px;margin-right:auto;flex-wrap:wrap"></span><button class="btn" id="clClose">Close</button></div>
 </div></div>
 
 <div class="modal" id="mDiag"><div class="dlg" style="max-width:820px">
@@ -6640,6 +6829,12 @@ function render(){
   if (filter==="ui" && !nUi) filter = "all";
   $("#suites").replaceChildren(...(nUi ? [h("button",{class:"stat suite" + (filter==="ui" ? " on" : ""), "data-f":"ui",
     title:"Your UI packs and their plugins: " + suitesHave.map(su=>su.name).join(", "), onclick:()=>{ filter = filter==="ui" ? "all" : "ui"; saveUi(); render(); }}, "UI ", h("b",{}, String(nUi)))] : []));
+  const nErr = m.filter(a=>a.errors).length, nUnused = m.filter(a=>a.unused).length;
+  if ((filter==="errors" && !nErr) || (filter==="unused" && !nUnused)) filter = "all";
+  const chip = (f, label, n, cls, tip) => h("button",{class:"stat suite " + cls + (filter===f ? " on" : ""), "data-f":f, title:tip,
+    onclick:()=>{ filter = filter===f ? "all" : f; saveUi(); render(); }}, label + " ", h("b",{}, String(n)));
+  $("#suites").append(...[nErr ? chip("errors", "Errors", nErr, "err", "Addons with Lua errors in BugGrabber (last 14 days)") : null,
+    nUnused ? chip("unused", "Unused", nUnused, "unused", "Switched off on every character — you could remove them") : null].filter(Boolean));
   const srcCount = {};
   for (const a of m) if (a.folders.length) srcCount[a.source||"curseforge"] = (srcCount[a.source||"curseforge"]||0) + 1;
   const srcs = Object.keys(srcCount).sort((x,y)=>srcCount[y]-srcCount[x]);
@@ -6658,6 +6853,8 @@ function render(){
   if (filter==="problems") rows = rows.filter(isBad);
   if (filter==="unmanaged") rows = [];
   if (suite) rows = rows.filter(a=>suiteOf(a));
+  if (filter==="errors") rows = rows.filter(a=>a.errors);
+  if (filter==="unused") rows = rows.filter(a=>a.unused);
   if (mSrc) rows = rows.filter(a=>(a.source||"curseforge")===mSrc);
   rows.sort(mCompare);
 
@@ -6672,7 +6869,7 @@ function render(){
     card.replaceChildren(h("div",{class:"empty"},"Nothing matches this filter."));
   } else {
     const main = [], libs = [];
-    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite) ? libs : main).push(a);
+    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite && filter==="all") ? libs : main).push(a);
     const tb = h("tbody");
     if (suite){   // grouped under each UI pack: "ElvUI (3)", "EllesmereUI (1)" …
       for (const su of SUITES){
@@ -6690,7 +6887,7 @@ function render(){
   }
 
   // other folders
-  const un = suite ? S.unmanaged.filter(g=>suiteOf(g)) : mSrc ? [] : S.unmanaged, hid = S.hidden_folders || [];
+  const un = suite ? S.unmanaged.filter(g=>suiteOf(g)) : (mSrc || filter==="errors" || filter==="unused") ? [] : S.unmanaged, hid = S.hidden_folders || [];
   $("#unC").textContent = un.length;
   const showUn = (filter==="all"||filter==="unmanaged"||(suite && un.length)) && c.addons_dir_ok && !mSrc;
   $("#unH").style.display = showUn && (un.length || filter==="unmanaged") ? "" : "none";
@@ -6768,11 +6965,13 @@ function addonRow(a, busy){
     : h("span",{class:"dim"},"—");
   const tr = h("tr",{class:"arow",oncontextmenu:e=>{ if (e.target.closest("a,input")) return; e.preventDefault();
       openMenu({getBoundingClientRect:()=>{ const w = $("#pop").offsetWidth; return {left:e.clientX, right:e.clientX + w, top:e.clientY - 6, bottom:e.clientY - 6}; }}, rowMenu(a, !!(S && S.job.running))); }},
-    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
+    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), (filter==="unused" ? h("div",{class:"s",style:"color:var(--amber)"}, "Off on every character") : h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", ")))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
     h("td",{}, ...statusCell(a, label, cls), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
-      (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
+      (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null,
+      a.errors ? h("button",{class:"errl",title:a.errors.message,onclick:()=>showErrors(a.key)},
+        a.errors.since_update ? "⚠ Errors since this update" : `⚠ ${a.errors.n} Lua error${a.errors.n===1?"":"s"}`) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
   tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
   return tr;
@@ -6781,6 +6980,7 @@ function rowMenu(a, busy){
   return [
     a.wago_only || a.tukui ? null : {label:"Details…", run:()=>openDetail(a.key)},
     a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
+    a.errors ? {label:"Lua errors…", run:()=>showErrors(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
@@ -7220,10 +7420,27 @@ function renderBackups(){
     h("button",{class:"btn small",disabled:busy,onclick:async ()=>{ if (await ask("Restore addon settings?", `Replaces your current WTF folder with the copy from ${new Date(b.date).toLocaleString()}. WoW must be closed. Your current settings are backed up first, so this can be undone.`, "Restore")) act("/api/restore",{name:b.name}); }},"Restore"))));
 }
 async function showChangelog(key){
-  $("#clT").textContent = "What's new"; $("#clB").textContent = "Loading…"; $("#clU").removeAttribute("href");
+  $("#clT").textContent = "What's new"; $("#clB").textContent = "Loading…"; $("#clU").removeAttribute("href"); $("#clU").hidden = false; $("#clAct").replaceChildren();
   $("#mLog").classList.add("show");
   try{ const r = await post("/api/changelog",{key}); $("#clT").textContent = r.title; $("#clB").textContent = r.text; if (r.url) $("#clU").href = r.url; }
   catch(e){ $("#clB").textContent = e.message; }
+}
+// Lua errors BugGrabber saved for one addon, with what you can do about them
+async function showErrors(key){
+  const a = S.managed.find(x=>x.key===key); if (!a) return;
+  $("#clT").textContent = a.name + " — Lua errors"; $("#clU").hidden = true; $("#clB").textContent = "Loading…";
+  $("#mLog").classList.add("show");
+  let r; try{ r = await post("/api/errors",{key}); } catch(e){ $("#clB").textContent = e.message; return; }
+  const when = t => t ? new Date(t*1000).toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
+  const text = r.errors.map(e=>`${e.count}× · ${when(e.time)}\n${e.message}${e.stack ? "\n" + e.stack.split("\n").slice(0,4).join("\n") : ""}`).join("\n\n");
+  $("#clB").replaceChildren(h("p",{class:"sub",style:"margin:0 0 10px"}, "From BugGrabber, last 14 days. " + (a.errors && a.errors.since_update ? "These started after the update to " + shortVer(a.installed_version) + "." : "")),
+    ...(r.errors.length ? r.errors.map(e=>h("div",{class:"errbox"}, h("div",{class:"eh"}, e.count + "× · " + when(e.time)), e.message + (e.stack ? "\n\n" + e.stack.split("\n").slice(0,6).join("\n") : ""))) : [h("div",{class:"muted"},"No errors left.")]));
+  const busy = !!S.job.running, close = ()=>$("#mLog").classList.remove("show");
+  $("#clAct").replaceChildren(
+    a.status==="update" ? h("button",{class:"btn primary",disabled:busy,onclick:()=>{ close(); act("/api/update",{key}); }},"Update to " + shortVer(a.latest_version)) : null,
+    a.previous_version ? h("button",{class:"btn" + (a.errors && a.errors.since_update && a.status!=="update" ? " primary" : ""),disabled:busy,title:"Goes back to the version before and pins it",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}).catch(()=>{}); act("/api/revert",{key}); }},"Revert to " + shortVer(a.previous_version)) : null,
+    h("button",{class:"btn",onclick:()=>{ navigator.clipboard.writeText(a.name + " " + (a.installed_version||"") + "\n\n" + text).then(()=>toast("Copied.")).catch(()=>{}); }},"Copy"),
+    h("button",{class:"btn ghost",title:"Hide these until new ones show up",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}); refresh(true); }},"Ignore"));
 }
 const DGI = {ok:"✔", warn:"!", fail:"✖", info:"i"};
 function renderDiag(){
@@ -7313,7 +7530,7 @@ function restoreUi(u){
   const okSel = (sel, v) => [...$(sel).options].some(o=>o.value===String(v));
   if (["status","name","installed","latest"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
   if (["curseforge","wago","github","tukui"].includes(u.msrc)) mSrc = u.msrc;
-  if (["all","updates","problems","unmanaged"].includes(u.filter) || u.filter==="ui"){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
+  if (["all","updates","problems","unmanaged","ui","errors","unused"].includes(u.filter)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
   if (u.bsort && okSel("#bsort", u.bsort)){ B.sort = String(u.bsort); $("#bsort").value = B.sort; }
   if (u.bcat) B.cat = String(u.bcat);            // the category lists load later and pick these up
   if (u.asort && okSel("#asort", u.asort)){ A.sort = String(u.asort); $("#asort").value = A.sort; }

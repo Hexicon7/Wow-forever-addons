@@ -1,7 +1,7 @@
 {
-  "version": "3.15.1",
-  "file": "WoWForeverAddons-Setup-3.15.1.exe",
-  "sha256": "937a083e41e23f84cf8327269536705881864aa42d3312835e3ecd00dc154f14",
-  "size": 5605888,
-  "notes": "Icons: addons without an icon on CurseForge (like BugGrabber) use their Wago icon; see-through dark icons get a lighter backdrop; an icon that never finishes loading shows its letter instead of an empty box; icons start loading sooner."
+  "version": "3.16.0",
+  "file": "WoWForeverAddons-Setup-3.16.0.exe",
+  "sha256": "13b402c5381d63c5c91247719a5e238924caecb533f92c207a6aef178e41cac3",
+  "size": 5618688,
+  "notes": "Lua errors from BugGrabber per addon: a small red line and an 'Errors' chip, with copy / update / revert / ignore \u2014 'Errors since this update' offers going back. An 'Unused' chip shows addons switched off on every character. Nothing pops up by itself."
 }

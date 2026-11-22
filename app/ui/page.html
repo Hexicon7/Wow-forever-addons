@@ -104,6 +104,11 @@ th .ar{font-size:10px;margin-left:4px}
 #msrc{max-width:170px}
 .stat.suite{border-style:dashed}
 .stat.suite.on{border-style:solid}
+.errl{display:block;margin-top:5px;background:none;border:0;padding:0;color:var(--red);font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.errl:hover{text-decoration:underline}
+.stat.err b{color:var(--red)}
+.errbox{white-space:pre-wrap;font:12px/1.45 ui-monospace,Consolas,monospace;background:#0e1015;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;max-height:none}
+.errbox .eh{font-family:inherit;color:var(--gold2);margin-bottom:4px}
 tr.grp.head td{cursor:default;color:var(--gold2);background:#151821}
 .gamepill{display:inline-flex;align-items:center;gap:7px;border:1px solid #e8a43c55;background:#e8a43c12;color:#f3c983;border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:help}
 .gamepill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber)}
@@ -474,7 +479,7 @@ textarea{width:100%;display:block;min-height:110px;resize:vertical;background:va
 <div class="modal" id="mLog"><div class="dlg" style="max-width:720px">
   <h3 id="clT">What's new</h3><p class="sub"><a id="clU" target="_blank" rel="noopener">Open on the web ↗</a></p>
   <div class="cl" id="clB">Loading…</div>
-  <div class="foot"><button class="btn" id="clClose">Close</button></div>
+  <div class="foot"><span id="clAct" style="display:flex;gap:8px;margin-right:auto;flex-wrap:wrap"></span><button class="btn" id="clClose">Close</button></div>
 </div></div>
 
 <div class="modal" id="mDiag"><div class="dlg" style="max-width:820px">
@@ -758,6 +763,12 @@ function render(){
   if (filter==="ui" && !nUi) filter = "all";
   $("#suites").replaceChildren(...(nUi ? [h("button",{class:"stat suite" + (filter==="ui" ? " on" : ""), "data-f":"ui",
     title:"Your UI packs and their plugins: " + suitesHave.map(su=>su.name).join(", "), onclick:()=>{ filter = filter==="ui" ? "all" : "ui"; saveUi(); render(); }}, "UI ", h("b",{}, String(nUi)))] : []));
+  const nErr = m.filter(a=>a.errors).length, nUnused = m.filter(a=>a.unused).length;
+  if ((filter==="errors" && !nErr) || (filter==="unused" && !nUnused)) filter = "all";
+  const chip = (f, label, n, cls, tip) => h("button",{class:"stat suite " + cls + (filter===f ? " on" : ""), "data-f":f, title:tip,
+    onclick:()=>{ filter = filter===f ? "all" : f; saveUi(); render(); }}, label + " ", h("b",{}, String(n)));
+  $("#suites").append(...[nErr ? chip("errors", "Errors", nErr, "err", "Addons with Lua errors in BugGrabber (last 14 days)") : null,
+    nUnused ? chip("unused", "Unused", nUnused, "unused", "Switched off on every character — you could remove them") : null].filter(Boolean));
   const srcCount = {};
   for (const a of m) if (a.folders.length) srcCount[a.source||"curseforge"] = (srcCount[a.source||"curseforge"]||0) + 1;
   const srcs = Object.keys(srcCount).sort((x,y)=>srcCount[y]-srcCount[x]);
@@ -776,6 +787,8 @@ function render(){
   if (filter==="problems") rows = rows.filter(isBad);
   if (filter==="unmanaged") rows = [];
   if (suite) rows = rows.filter(a=>suiteOf(a));
+  if (filter==="errors") rows = rows.filter(a=>a.errors);
+  if (filter==="unused") rows = rows.filter(a=>a.unused);
   if (mSrc) rows = rows.filter(a=>(a.source||"curseforge")===mSrc);
   rows.sort(mCompare);
 
@@ -790,7 +803,7 @@ function render(){
     card.replaceChildren(h("div",{class:"empty"},"Nothing matches this filter."));
   } else {
     const main = [], libs = [];
-    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite) ? libs : main).push(a);
+    for (const a of rows) ((a.library && rank(a)===3 && !q && MS.by==="status" && !suite && filter==="all") ? libs : main).push(a);
     const tb = h("tbody");
     if (suite){   // grouped under each UI pack: "ElvUI (3)", "EllesmereUI (1)" …
       for (const su of SUITES){
@@ -808,7 +821,7 @@ function render(){
   }
 
   // other folders
-  const un = suite ? S.unmanaged.filter(g=>suiteOf(g)) : mSrc ? [] : S.unmanaged, hid = S.hidden_folders || [];
+  const un = suite ? S.unmanaged.filter(g=>suiteOf(g)) : (mSrc || filter==="errors" || filter==="unused") ? [] : S.unmanaged, hid = S.hidden_folders || [];
   $("#unC").textContent = un.length;
   const showUn = (filter==="all"||filter==="unmanaged"||(suite && un.length)) && c.addons_dir_ok && !mSrc;
   $("#unH").style.display = showUn && (un.length || filter==="unmanaged") ? "" : "none";
@@ -886,11 +899,13 @@ function addonRow(a, busy){
     : h("span",{class:"dim"},"—");
   const tr = h("tr",{class:"arow",oncontextmenu:e=>{ if (e.target.closest("a,input")) return; e.preventDefault();
       openMenu({getBoundingClientRect:()=>{ const w = $("#pop").offsetWidth; return {left:e.clientX, right:e.clientX + w, top:e.clientY - 6, bottom:e.clientY - 6}; }}, rowMenu(a, !!(S && S.job.running))); }},
-    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", "))))),
+    h("td",{}, h("div",{class:"nm"}, logoEl(a.logo, a.name, null, true), h("div",{style:"min-width:0"}, h("div",{class:"t",title:a.name}, a.name), (filter==="unused" ? h("div",{class:"s",style:"color:var(--amber)"}, "Off on every character") : h("div",{class:"s",title:a.summary||""}, a.summary || (a.authors||[]).slice(0,2).join(", ")))))),
     h("td",{}, inst),
     h("td",{class:"hide-s"}, latest),
     h("td",{}, ...statusCell(a, label, cls), a.compat==="mismatch" ? compatNote(a.toc_interfaces, a.toc_file) : null,
-      (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null),
+      (a.missing_deps||[]).length ? h("div",{class:"compat",style:"color:var(--red)",title:"The addon's .toc says it can't load without these"},"⚠ Needs: "+a.missing_deps.join(", ")) : null,
+      a.errors ? h("button",{class:"errl",title:a.errors.message,onclick:()=>showErrors(a.key)},
+        a.errors.since_update ? "⚠ Errors since this update" : `⚠ ${a.errors.n} Lua error${a.errors.n===1?"":"s"}`) : null),
     h("td",{}, h("div",{class:"acts"}, acts)));
   tr.addEventListener("click", e=>{ if (!e.target.closest("button,a") && !a.wago_only && !a.tukui) openDetail(a.key); });
   return tr;
@@ -899,6 +914,7 @@ function rowMenu(a, busy){
   return [
     a.wago_only || a.tukui ? null : {label:"Details…", run:()=>openDetail(a.key)},
     a.latest_version && !a.wago_only && ["update","update_manual","ok","pinned"].includes(a.status) ? {label:"What's new", run:()=>showChangelog(a.key)} : null,
+    a.errors ? {label:"Lua errors…", run:()=>showErrors(a.key)} : null,
     "-",
     {label: a.pinned ? "Unpin — allow updates again" : "Pin — keep this version", disabled:busy, run:()=>act("/api/pin",{key:a.key,pinned:!a.pinned})},
     a.previous_version ? {label:"Revert to "+a.previous_version, disabled:busy, run:async ()=>{ if (await ask(`Revert ${a.name}?`, `Goes back to ${a.previous_version} and pins it so Update all skips it. You can switch back the same way.`, "Revert")) act("/api/revert",{key:a.key}); }} : null,
@@ -1338,10 +1354,27 @@ function renderBackups(){
     h("button",{class:"btn small",disabled:busy,onclick:async ()=>{ if (await ask("Restore addon settings?", `Replaces your current WTF folder with the copy from ${new Date(b.date).toLocaleString()}. WoW must be closed. Your current settings are backed up first, so this can be undone.`, "Restore")) act("/api/restore",{name:b.name}); }},"Restore"))));
 }
 async function showChangelog(key){
-  $("#clT").textContent = "What's new"; $("#clB").textContent = "Loading…"; $("#clU").removeAttribute("href");
+  $("#clT").textContent = "What's new"; $("#clB").textContent = "Loading…"; $("#clU").removeAttribute("href"); $("#clU").hidden = false; $("#clAct").replaceChildren();
   $("#mLog").classList.add("show");
   try{ const r = await post("/api/changelog",{key}); $("#clT").textContent = r.title; $("#clB").textContent = r.text; if (r.url) $("#clU").href = r.url; }
   catch(e){ $("#clB").textContent = e.message; }
+}
+// Lua errors BugGrabber saved for one addon, with what you can do about them
+async function showErrors(key){
+  const a = S.managed.find(x=>x.key===key); if (!a) return;
+  $("#clT").textContent = a.name + " — Lua errors"; $("#clU").hidden = true; $("#clB").textContent = "Loading…";
+  $("#mLog").classList.add("show");
+  let r; try{ r = await post("/api/errors",{key}); } catch(e){ $("#clB").textContent = e.message; return; }
+  const when = t => t ? new Date(t*1000).toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
+  const text = r.errors.map(e=>`${e.count}× · ${when(e.time)}\n${e.message}${e.stack ? "\n" + e.stack.split("\n").slice(0,4).join("\n") : ""}`).join("\n\n");
+  $("#clB").replaceChildren(h("p",{class:"sub",style:"margin:0 0 10px"}, "From BugGrabber, last 14 days. " + (a.errors && a.errors.since_update ? "These started after the update to " + shortVer(a.installed_version) + "." : "")),
+    ...(r.errors.length ? r.errors.map(e=>h("div",{class:"errbox"}, h("div",{class:"eh"}, e.count + "× · " + when(e.time)), e.message + (e.stack ? "\n\n" + e.stack.split("\n").slice(0,6).join("\n") : ""))) : [h("div",{class:"muted"},"No errors left.")]));
+  const busy = !!S.job.running, close = ()=>$("#mLog").classList.remove("show");
+  $("#clAct").replaceChildren(
+    a.status==="update" ? h("button",{class:"btn primary",disabled:busy,onclick:()=>{ close(); act("/api/update",{key}); }},"Update to " + shortVer(a.latest_version)) : null,
+    a.previous_version ? h("button",{class:"btn" + (a.errors && a.errors.since_update && a.status!=="update" ? " primary" : ""),disabled:busy,title:"Goes back to the version before and pins it",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}).catch(()=>{}); act("/api/revert",{key}); }},"Revert to " + shortVer(a.previous_version)) : null,
+    h("button",{class:"btn",onclick:()=>{ navigator.clipboard.writeText(a.name + " " + (a.installed_version||"") + "\n\n" + text).then(()=>toast("Copied.")).catch(()=>{}); }},"Copy"),
+    h("button",{class:"btn ghost",title:"Hide these until new ones show up",onclick:async ()=>{ close(); await post("/api/errors_ignore",{key}); refresh(true); }},"Ignore"));
 }
 const DGI = {ok:"✔", warn:"!", fail:"✖", info:"i"};
 function renderDiag(){
@@ -1431,7 +1464,7 @@ function restoreUi(u){
   const okSel = (sel, v) => [...$(sel).options].some(o=>o.value===String(v));
   if (["status","name","installed","latest"].includes(u.msort)){ MS.by = u.msort; MS.dir = +u.mdir === -1 ? -1 : 1; }
   if (["curseforge","wago","github","tukui"].includes(u.msrc)) mSrc = u.msrc;
-  if (["all","updates","problems","unmanaged"].includes(u.filter) || u.filter==="ui"){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
+  if (["all","updates","problems","unmanaged","ui","errors","unused"].includes(u.filter)){ filter = u.filter; document.querySelectorAll(".stat").forEach(e=>e.classList.toggle("on", e.dataset.f===filter)); }
   if (u.bsort && okSel("#bsort", u.bsort)){ B.sort = String(u.bsort); $("#bsort").value = B.sort; }
   if (u.bcat) B.cat = String(u.bcat);            // the category lists load later and pick these up
   if (u.asort && okSel("#asort", u.asort)){ A.sort = String(u.asort); $("#asort").value = A.sort; }
