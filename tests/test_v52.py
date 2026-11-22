@@ -1,6 +1,6 @@
 # 3.12: icons stay in Browse, a missing Forever file is mentioned once, other folders found on Wago /
 # shown as libraries, keys pasted in one box (each tested only with its own site), compiled start-up copy.
-import os, sys, json, time, subprocess, tempfile, urllib.request, shutil
+import os, zipfile, sys, json, time, subprocess, tempfile, urllib.request, shutil
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
@@ -97,15 +97,19 @@ try:
         pg.screenshot(path="/home/claude/shots/v52-setup.png")
         b.close()
     app.terminate(); app.wait()
-    # compiled copy for a faster start (desktop program only)
+    # installed layout: the small start file + wfam.zip (compiled ahead of time); an old compiled copy is removed
     inst = tmp/"inst"; inst.mkdir(); shutil.copy(APP, inst/"WoWForeverAddons.pyw")
-    env3 = dict(env, WFAM_BYTECODE_DELAY="0.5")
-    app = subprocess.Popen([sys.executable, str(inst/"WoWForeverAddons.pyw"), "--no-browser", "--port", "47995", "--host-pid", str(os.getpid())], env=env3); time.sleep(3)
-    pyc = inst/"WoWForeverAddons.pyc"
-    check(pyc.is_file() and pyc.stat().st_mtime >= (inst/"WoWForeverAddons.pyw").stat().st_mtime, "the desktop program saves a compiled copy of itself")
+    r = subprocess.run(["python3.13", "/home/claude/repo/tools/build_zip.py", str(inst/"wfam.zip")], capture_output=True, text=True)
+    check(r.returncode == 0 and (inst/"wfam.zip").is_file(), "wfam.zip built: " + r.stdout.strip())
+    names = zipfile.ZipFile(inst/"wfam.zip").namelist()
+    check("wfam/main.pyc" in names and "wfam/ui/app.js" in names and "wfam/manager/views.pyc" in names, "the zip has compiled modules and the page")
+    (inst/"WoWForeverAddons.pyc").write_bytes(b"old compiled copy")
+    app = subprocess.Popen(["python3.13", str(inst/"WoWForeverAddons.pyw"), "--no-browser", "--port", "47995", "--host-pid", str(os.getpid())], env=env); time.sleep(3)
+    page = urllib.request.urlopen("http://127.0.0.1:47995/").read().decode()
+    js = urllib.request.urlopen("http://127.0.0.1:47995/app.js?v=x")
+    check("WoW Forever Addons" in page and "/app.js?v=" in page and js.headers["Cache-Control"].endswith("immutable"), "runs from the zip; page and cached script served")
+    check(not (inst/"WoWForeverAddons.pyc").exists(), "the old compiled copy is removed")
     app.terminate(); app.wait()
-    r = subprocess.run([sys.executable, str(pyc), "--version"], capture_output=True, text=True, env=env)
-    check("usage" in (r.stdout + r.stderr) or r.returncode == 0, "the compiled copy runs")
 finally:
     app.terminate()
 print("FAILURES:", fails); sys.exit(1 if fails else 0)

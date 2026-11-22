@@ -39,7 +39,7 @@ check(url.endswith("/raw/fake/pushonly/main/updates/WoWForeverAddons-Setup-9.9.1
 # the download is checked against the manifest's sha256
 import importlib.machinery, importlib.util
 os.environ.update(WFAM_GITHUB_RAW=fake_cf.BASE + "/raw", WFAM_DATA_DIR=str(tmp/"data"))
-ld = importlib.machinery.SourceFileLoader("wfam", APP); W = importlib.util.module_from_spec(importlib.util.spec_from_loader("wfam", ld)); ld.exec_module(W)
+from wfam_load import W
 exe = fake_cf.RAW["fake/pushonly/main/updates/WoWForeverAddons-Setup-9.9.10.exe"]
 asset = {"browser_download_url": fake_cf.BASE + "/raw/fake/pushonly/main/updates/WoWForeverAddons-Setup-9.9.10.exe",
          "digest": "sha256:" + hashlib.sha256(exe).hexdigest()}

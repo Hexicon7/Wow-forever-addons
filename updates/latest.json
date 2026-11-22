@@ -1,7 +1,7 @@
 {
-  "version": "3.17.0",
-  "file": "WoWForeverAddons-Setup-3.17.0.exe",
-  "sha256": "d05286dc1dc8a6dcdf3878d98e3e89900b01be36aa3009a8ae9dad6e1201d690",
-  "size": 5636096,
-  "notes": "Backups: 'Export everything' (addons + all their settings, keybinds, macros and hand-installed addons in one file) and 'Restore from file\u2026' for a new PC. Optional sync folder (OneDrive/Dropbox) keeps two PCs in step \u2014 the other PC offers to restore, nothing happens by itself. Lua-errors dialog: 'Report \u2197' opens the addon's bug tracker with the errors filled in."
+  "version": "3.18.0",
+  "file": "WoWForeverAddons-Setup-3.18.0.exe",
+  "sha256": "4207cfd5eec8dc57af0f442a9b7dfe7e90c3d382f3fb820b6198357c3fb465cf",
+  "size": 5599744,
+  "notes": "Under the hood: the program is now split into clear parts instead of one 8,000-line file, and ships compiled ahead of time \u2014 it starts noticeably faster (about 45% in tests) and the window's page is cached between starts. No changes to how it looks or works."
 }

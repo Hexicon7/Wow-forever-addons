@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://media.forgecdn.net">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WoW Forever Addons</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/app.css?v={{VERSION}}">
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><div class="mark"><img src="/icon.png" alt="" onerror="this.parentNode.textContent='F'"></div><div><div class="bt">WoW Forever</div><div class="bs">Addon Manager</div></div></div>
+    <nav>
+      <button class="tab on" data-v="installed" title="My addons (Ctrl+1)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="lbl">My addons</span><span class="c" id="tabN">0</span></button>
+      <button class="tab" data-v="browse" title="Browse (Ctrl+2)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg><span class="lbl">Browse</span></button>
+      <button class="tab" data-v="auras" title="WeakAuras (Ctrl+3)"><svg viewBox="0 0 24 24"><path d="M11 3.5l1.9 4.6 4.6 1.9-4.6 1.9L11 16.5l-1.9-4.6L4.5 10l4.6-1.9z"/><path d="M18 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg><span class="lbl">WeakAuras</span></button>
+      <button class="tab" data-v="chars" title="Characters (Ctrl+4)"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c.6-3.4 3.1-5.5 6-5.5s5.4 2.1 6 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.7.7 2.8 2.5 3 5.2"/></svg><span class="lbl">Characters</span></button>
+      <button class="tab" data-v="backups" title="Backups (Ctrl+5)"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg><span class="lbl">Backups</span></button>
+    </nav>
+    <div class="grow"></div>
+    <div class="selfupd" id="selfUpd" hidden></div>
+    <nav><button class="tab" id="bSettings" data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="lbl">Settings</span></button></nav>
+    <div class="sfoot">
+      <div class="path" id="path">—</div>
+      <div class="row2"><span class="ver" id="verTxt"></span><button class="btn ghost small" id="bQuit" title="Stop the manager">Quit</button></div>
+      <button class="linkbtn" id="bSelfChk" style="margin-top:6px" title="Look for a new version of this program">Check for program update</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <h1 id="vTitle">My addons</h1><span class="sub" id="vSub"></span>
+      <span class="sp"></span>
+      <span class="gamepill" id="gameWarn" hidden title="WoW is running. Changes take effect after /reload or restarting the game, and Windows may refuse to replace files the game has open.">WoW running · /reload after changes</span>
+      <button class="btn" id="bCheck" title="Check for updates (F5)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>Check for updates</button>
+      <button class="btn ghost" id="bLast" hidden title="What the last update changed (and Undo)"></button>
+      <button class="btn primary" id="bUpdAll">Update all</button>
+    </div>
+    <div class="scroll" id="scroll">
+
+      <div id="vInstalled" class="view">
+        <div class="bar">
+          <div class="fchips">
+            <button class="stat on" data-f="all">All <b id="sAll">0</b></button>
+            <button class="stat upd" data-f="updates">Updates <b id="sUpd">0</b></button>
+            <button class="stat bad" data-f="problems">Need attention <b id="sBad">0</b></button>
+            <button class="stat" data-f="unmanaged">Other folders <b id="sUn">0</b></button>
+            <span id="suites" style="display:contents"></span>
+          </div>
+          <div class="bright">
+          <input id="q" class="search" placeholder="Search my addons" autocomplete="off" spellcheck="false">
+          <select id="msrc" title="Show only addons from one source (sort by clicking a column heading)" hidden></select>
+          <button class="btn primary" id="bAddOpen"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add addons</button>
+          <button class="btn icon" id="bMoreIns" title="More">⋯</button>
+          </div>
+        </div>
+        <div class="card" id="managedCard"></div>
+        <h2 id="unH">Other folders in AddOns <span class="c" id="unC">0</span><span style="flex:1"></span><button class="btn small" id="bScan" title="Recognise hand-installed addons by their files (CurseForge fingerprints) and by name on Wago">Look up online</button></h2>
+        <div class="card" id="unCard"></div>
+        <div id="hidBox" style="margin-top:10px"></div>
+      </div>
+
+      <div id="vBrowse" class="view" hidden>
+        <div class="bar" id="srcBar" hidden><span class="dim" id="srcHint" style="font-size:12.5px"></span></div>
+        <div class="bsearch">
+          <input id="bq" class="search" placeholder="Search WoW Forever addons — bags, quests, bosses, auction…" autocomplete="off" spellcheck="false">
+          <select id="bcat"><option value="">All categories</option></select>
+          <select id="wcat" hidden><option value="">All categories</option></select>
+          <select id="acat" hidden><option value="">All categories</option></select>
+          <select id="asort" hidden><option value="installs">Most installed</option><option value="date">Recently updated</option><option value="stars">Most stars</option><option value="views">Most viewed</option><option value="bestmatchv3">Best match</option></select>
+          <select id="wsort" hidden><option value="pop">Most popular</option><option value="dl">Most downloaded</option><option value="new">Recently updated</option><option value="name">Name</option></select>
+          <select id="bsort">
+            <option value="2">Most popular</option>
+            <option value="6">Most downloaded</option>
+            <option value="3">Recently updated</option>
+            <option value="11">Newest</option>
+            <option value="4">Name A–Z</option>
+          </select>
+        </div>
+        <div class="bmeta" id="bmeta"></div>
+        <div id="bres"></div>
+        <div class="more" id="bmore" hidden><button class="btn" id="bMoreBtn">Show more</button></div>
+      </div>
+
+      <div id="vChars" class="view" hidden>
+        <div class="banner in" id="chGame" hidden>⚠ WoW is running. The game saves AddOns.txt again when you log out, so change characters at the character select screen or with the game closed.</div>
+        <div class="bar">
+          <span class="muted" style="font-size:13px">Click a cell to switch an addon on or off for that character. <span class="dim">○ = not set yet (uses the addon's default)</span></span>
+          <span class="sp"></span>
+          <label class="dim" style="font-size:13px"><input type="checkbox" id="chAll" style="margin-right:6px;vertical-align:-2px">Show libraries &amp; modules</label>
+          <button class="btn small" id="chReload">Reload</button>
+          <button class="btn small" id="chDiscard" hidden>Discard</button>
+          <button class="btn small primary" id="chSave" hidden>Save changes</button>
+        </div>
+        <div class="card" id="chBox"></div>
+        <div id="profBox" style="margin-top:14px"></div>
+      </div>
+
+      <div id="vBackups" class="view" hidden>
+        <p class="muted" style="margin:0 0 14px;max-width:820px">Every addon keeps its settings (profiles, Questie progress, bars…) in your <b>WTF</b> folder, not in AddOns. A copy is saved automatically before addons are installed, updated or removed (at most once per 10 minutes). Restoring needs WoW to be closed.</p>
+        <div class="card setupc">
+          <div class="row"><div><b>Your whole setup in one file</b><div class="muted">Your addon list (they're downloaded again from their sites), every addon's settings, keybinds and macros, and hand-installed addons. For a new PC or a fresh WoW install — it holds your own settings, so keep it to yourself (to send a friend just the addon list, use ⋯ → “Share / move my list” in My addons).</div></div>
+            <button class="btn" id="bSetupExport">Export everything</button><button class="btn" id="bSetupRestore">Restore from file…</button></div>
+          <div class="row"><div><b>Keep two PCs in step</b><div class="muted">Pick a folder that OneDrive, Dropbox or Google Drive syncs. This PC saves its setup there when something changes (not while WoW runs); the other PC offers to restore it — nothing happens by itself.</div></div>
+            <input id="fSync" placeholder="e.g. C:\Users\you\OneDrive\WoW Forever" spellcheck="false"><button class="btn" id="bSyncSave">Save</button></div>
+          <div id="syncStatus" class="muted" style="margin:0"></div>
+          <div id="syncOffer"></div>
+        </div>
+        <div class="bar"><span class="sp"></span><button class="btn small" id="bBackupNow">Back up now</button></div>
+        <div class="card" id="bkList"></div>
+      </div>
+    </div>
+
+    <div class="drawer" id="drawer">
+      <div class="dbar" id="dbar"><span class="dot" id="dDot"></span><span class="last" id="dLast">Ready.</span><span class="dim" style="font-size:12px" id="dTog">Show activity ▲</span></div>
+      <div class="logbox" id="logbox"></div>
+    </div>
+  </main>
+</div>
+
+<!-- detail panel -->
+<div class="shade" id="shade"></div>
+<div class="sheet" id="detail" aria-hidden="true">
+  <div class="shd" id="dHead"></div>
+  <div class="stabs" id="dTabs">
+    <button class="stab on" data-t="about">Overview</button>
+    <button class="stab" data-t="versions">Versions</button>
+    <button class="stab" data-t="info">Details</button>
+  </div>
+  <div class="sbody" id="dBody"></div>
+</div>
+<div class="lightbox" id="lightbox"><img id="lbImg" alt=""></div>
+<div class="pop" id="pop" hidden></div>
+
+<div class="modal" id="mAdd"><div class="dlg">
+  <h3>Add addons</h3>
+  <p class="sub">Paste CurseForge links or names — one or many. Or find them in <a href="#" id="toBrowse">Browse</a>.</p>
+  <textarea id="links" rows="4" placeholder="https://www.curseforge.com/wow/addons/questie&#10;https://www.curseforge.com/wow/addons/details"></textarea>
+  <div class="dim" style="font-size:12px;margin-top:8px">Installs the newest WoW Forever file of each. Required libraries are added automatically. A link to a specific file installs that exact version.</div>
+  <div class="foot" style="margin-top:16px"><button class="btn" id="addCancel">Cancel</button><button class="btn primary" id="bAdd">Install</button></div>
+</div></div>
+
+<div class="modal" id="mBatch"><div class="dlg" style="max-width:600px">
+  <h3 id="btT">Updated</h3><p class="sub" id="btS"></p>
+  <div id="btL" style="max-height:50vh;overflow:auto"></div>
+  <div class="foot" style="margin-top:16px"><button class="btn ghost danger" id="btUndo" style="margin-right:auto" title="Put back the versions you had before (they get pinned)">Undo this update</button><button class="btn primary" id="btClose">Close</button></div>
+</div></div>
+
+<div class="modal" id="mShare"><div class="dlg" style="max-width:620px">
+  <h3>Share or move your addon list</h3>
+  <p class="sub">One line of text with all your addons. Paste it to a friend, or into this program on another PC.</p>
+  <textarea id="shCode" readonly rows="3" spellcheck="false" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px;justify-content:flex-start"><button class="btn primary" id="shCopy">Copy code</button><span class="dim" id="shCount" style="margin-left:10px;align-self:center"></span></div>
+  <h3 style="margin-top:22px">Install from a code</h3>
+  <p class="sub">Paste a share code (or a list of CurseForge links). Addons you already have are skipped.</p>
+  <textarea id="shIn" rows="3" spellcheck="false" placeholder="WFA1.…" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+  <div class="foot" style="margin-top:8px"><button class="btn" id="shClose">Close</button><button class="btn primary" id="shGo">Install these addons</button></div>
+</div></div>
+
+<div class="modal" id="mAsk"><div class="dlg" style="max-width:460px">
+  <h3 id="askT"></h3><p class="sub" id="askB" style="white-space:pre-line"></p>
+  <input id="askIn" hidden autocomplete="off" spellcheck="false">
+  <div class="foot"><button class="btn" id="askNo">Cancel</button><button class="btn primary" id="askYes">OK</button></div>
+</div></div>
+
+<input type="file" id="file" accept=".zip,application/zip" hidden>
+<input type="file" id="fileSetup" accept=".zip,application/zip" hidden>
+<input type="file" id="importFile" accept=".json,application/json" hidden>
+<a id="bExport" href="/api/export" download hidden>Export</a>
+
+<div class="modal" id="mLog"><div class="dlg" style="max-width:720px">
+  <h3 id="clT">What's new</h3><p class="sub"><a id="clU" target="_blank" rel="noopener">Open on the web ↗</a></p>
+  <div class="cl" id="clB">Loading…</div>
+  <div class="foot"><span id="clAct" style="display:flex;gap:8px;margin-right:auto;flex-wrap:wrap"></span><button class="btn" id="clClose">Close</button></div>
+</div></div>
+
+<div class="modal" id="mDiag"><div class="dlg" style="max-width:820px">
+  <h3>Diagnostics</h3><p class="sub">Checks every part against the real CurseForge, Wago, GitHub and tukui.org. Nothing is installed; one small addon is downloaded to a temporary folder and deleted. Your API key is never included in the report.</p>
+  <div id="dgBody"></div>
+  <div class="foot"><button class="btn" id="dgCopy">Copy report</button><button class="btn" id="dgRun">Run again</button><button class="btn primary" id="dgClose">Close</button></div>
+</div></div>
+
+<div class="modal" id="mSettings">
+  <div class="dlg"><div class="inner">
+    <h3 id="sTitle" style="font-size:21px">Settings</h3>
+    <p class="sub" id="sSub">Where your addons live, how they're updated, and how the program behaves.</p>
+    <ol class="steps" id="setupSteps" hidden>
+      <li>Get a free API key: sign in at <a href="https://console.curseforge.com/" target="_blank" rel="noopener">console.curseforge.com</a> → API keys, and paste it below.</li>
+      <li>Pick your <b>_forever_\Interface\AddOns</b> folder (Detect usually finds it).</li>
+      <li>Save, then add addons from Browse or by pasting links.</li>
+    </ol>
+    <div class="sect"><h4>Game</h4>
+      <div class="field">
+        <label for="fDir">WoW Forever AddOns folder</label>
+        <div class="row"><input id="fDir" spellcheck="false" autocomplete="off" placeholder="C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns"><button class="btn" id="bDetect">Detect</button></div>
+        <div class="chips" id="dirChips"></div>
+        <div class="help">You can also paste the World of Warcraft or _forever_ folder — the rest is filled in.</div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="fChan">Release channel</label>
+          <select id="fChan"><option value="release">Release only (recommended)</option><option value="beta">Release + Beta</option><option value="alpha">Everything (incl. Alpha)</option></select>
+        </div>
+        <div class="field">
+          <label for="fIf">Game interface number</label>
+          <input id="fIf" inputmode="numeric" autocomplete="off" placeholder="Automatic">
+          <div class="help" id="fIfHelp">Used to flag addons made for another WoW version.</div>
+        </div>
+      </div>
+    </div>
+    <div class="sect" id="hostBox" hidden><h4>Program</h4>
+      <div class="field">
+        <label class="ck"><input type="checkbox" id="fTray">Keep running in the system tray when I close the window</label>
+        <label class="ck" style="align-items:center">Check for updates
+          <select id="fBgH" style="width:auto;padding:5px 8px"><option value="0">never</option><option value="1">every hour</option><option value="3">every 3 hours</option><option value="6">every 6 hours</option><option value="12">every 12 hours</option><option value="24">once a day</option></select></label>
+        <label class="ck"><input type="checkbox" id="fBgUp">Install updates automatically (otherwise just notify me)</label>
+        <label class="ck"><input type="checkbox" id="fAuto">Start with Windows (in the tray)</label>
+        <label class="ck" style="align-items:center">Size of text and buttons
+          <select id="fScale" style="width:auto;padding:5px 8px"><option value="100">100 % (recommended)</option><option value="90">90 %</option><option value="110">110 %</option><option value="125">125 %</option><option value="system">Follow Windows' display scaling</option><option value="fit">Grow with the window</option></select></label>
+        <div class="help">Background checks run while the program is open or in the tray. Right-click the tray icon to check now or quit.</div>
+        <div class="help" id="selfRepo" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div class="sect"><h4>Updates &amp; downloads</h4>
+      <div class="field"><label class="ck"><input type="checkbox" id="fDeps">Install required libraries automatically</label>
+        <label class="ck"><input type="checkbox" id="fAutoMan">Addons that only allow downloads on CurseForge's site: open the download page and install the zip when it lands in Downloads</label>
+        <label class="ck"><input type="checkbox" id="fGh">…but first try the addon's GitHub releases (no browser needed)</label>
+        <label class="ck"><input type="checkbox" id="fDel">Delete the zip from Downloads after installing it</label></div>
+      <div class="field">
+        <label for="fDl">Downloads folder</label>
+        <input id="fDl" spellcheck="false" autocomplete="off">
+        <div class="help">Where your browser saves downloads. Leave empty for the Windows default.</div>
+      </div>
+      <div class="field">
+        <label class="ck" style="align-items:center"><input type="checkbox" id="fBk">Back up addon settings (WTF folder) before changing addons — keep the newest <input id="fBkN" inputmode="numeric" style="width:56px;padding:3px 6px;margin:0 2px"> copies</label>
+      </div>
+      <div class="field">
+        <label for="fBkDir">Backups folder</label>
+        <input id="fBkDir" spellcheck="false" autocomplete="off">
+        <div class="help">Put it in OneDrive (or another synced folder) to keep your addon settings safe even if the PC breaks. Existing backups are moved. Leave empty for the default.</div>
+      </div>
+    </div>
+    <div class="sect"><h4>Accounts</h4>
+      <div class="field">
+        <label for="fKey">CurseForge API key</label>
+        <div class="row"><input id="fKey" type="password" autocomplete="off" spellcheck="false"><button class="btn" id="bTestKey">Test key</button></div>
+        <div class="help" id="keyResult" style="display:none"></div>
+        <div class="help" id="keyHelp">Paste it and it's checked and saved by itself. Stored only on this PC. Get one free at <a href="https://console.curseforge.com/">console.curseforge.com</a> → API keys.</div>
+      </div>
+      <div class="field">
+        <label for="fWago">Wago Addons key <span class="dim" style="font-weight:400">(optional — from addons.wago.io/patreon)</span></label>
+        <div class="row"><input id="fWago" type="password" autocomplete="off" spellcheck="false"><button class="btn" id="bTestWago">Test</button></div>
+        <div class="help" id="wagoResult" style="display:none"></div>
+        <label class="ck"><input type="checkbox" id="fUseWago">Use Wago: compare versions there, update from it when it's newer, and get addons that CurseForge only offers on its own site</label>
+      </div>
+      <div class="field">
+        <label for="fType">CurseForge game version</label>
+        <div class="row"><select id="fType"><option value="auto">Automatic (WoW Forever)</option></select><button class="btn" id="bTypes">Load list</button></div>
+        <div class="help">Which CurseForge version tag counts as “Forever”. Automatic is right unless CurseForge renames it.</div>
+      </div>
+    </div>
+    <div class="sect" id="winBox"><h4>Window</h4>
+      <div class="field">
+        <label class="ck"><input type="checkbox" id="fWin">Open in its own window (no browser tabs or address bar) — takes effect next start</label>
+        <div style="margin-top:8px"><button class="btn small" id="bShortcut">Add to desktop &amp; Start menu</button></div>
+      </div>
+    </div>
+    <div class="foot"><button class="btn ghost" id="bDiag" style="margin-right:auto">Run diagnostics</button><button class="btn" id="bCancel">Cancel</button><button class="btn primary" id="bSave">Save</button></div>
+  </div></div>
+</div>
+
+<script src="/app.js?v={{VERSION}}"></script>
+</body>
+</html>

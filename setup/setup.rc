@@ -1,8 +1,8 @@
 1 ICON "payload/icon.ico"
 1 24 "app.manifest"
 1 VERSIONINFO
-FILEVERSION 3,17,0,0
-PRODUCTVERSION 3,17,0,0
+FILEVERSION 3,18,0,0
+PRODUCTVERSION 3,18,0,0
 FILEFLAGSMASK 0x3f
 FILEOS 0x40004
 FILETYPE 0x1
@@ -13,10 +13,10 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "WoW Forever Addon Manager"
       VALUE "FileDescription", "WoW Forever Addon Manager Setup"
-      VALUE "FileVersion", "3.17.0"
+      VALUE "FileVersion", "3.18.0"
       VALUE "ProductName", "WoW Forever Addon Manager"
-      VALUE "ProductVersion", "3.17.0"
-      VALUE "OriginalFilename", "WoWForeverAddons-Setup-3.17.0.exe"
+      VALUE "ProductVersion", "3.18.0"
+      VALUE "OriginalFilename", "WoWForeverAddons-Setup-3.18.0.exe"
       VALUE "InternalName", "WoWForeverAddons-Setup"
       VALUE "LegalCopyright", "Free to use"
     END

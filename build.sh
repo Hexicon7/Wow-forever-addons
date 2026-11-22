@@ -4,10 +4,12 @@ set -e
 cd "$(dirname "$0")"
 WR=${WR:-llvm-windres}
 command -v "$WR" >/dev/null 2>&1 || WR=/usr/lib/llvm-18/bin/llvm-windres
-V=$(grep -oP 'APP_VERSION = "\K[^"]+' app/WoWForeverAddons.pyw)
+V=$(grep -oP 'APP_VERSION = "\K[^"]+' app/wfam/config.py)
 C=$(echo "$V" | tr . ,)
-python3 tools/splice.py --repo .
-python3 app/WoWForeverAddons.pyw --write-icon setup/payload/icon.ico
+PY=${PY:-python3.13}
+command -v "$PY" >/dev/null 2>&1 || PY=python3
+"$PY" tools/build_zip.py setup/payload/wfam.zip
+"$PY" app/WoWForeverAddons.pyw --write-icon setup/payload/icon.ico
 cp setup/payload/icon.ico desktop/payload/icon.ico
 python3 tools/verify_authenticode.py desktop/payload/WebView2Loader.dll >/dev/null
 sed -E -i "s/(name=\"WoWForeverAddons.App\" version=\")[0-9.]+(\")/\1$V.0\2/" desktop/app.manifest

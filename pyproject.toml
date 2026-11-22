@@ -1,0 +1,13 @@
+[project]
+name = "wow-forever-addons"
+description = "Addon manager for World of Warcraft: Forever"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+[tool.ruff]
+line-length = 125
+target-version = "py311"
+src = ["app"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "I"]

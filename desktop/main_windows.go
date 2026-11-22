@@ -455,22 +455,11 @@ func focusExisting() {
 	}
 }
 
-// script is the manager itself: the compiled copy it saves (WoWForeverAddons.pyc) when that is newer
-// than the .pyw — Python then skips compiling it at start — otherwise the .pyw.
+// script starts the manager. It runs the wfam package from wfam.zip next to it, which already holds
+// the compiled code, so nothing needs compiling at start.
 func script(dir string) string {
-	pyw := filepath.Join(dir, "WoWForeverAddons.pyw")
-	pyc := filepath.Join(dir, "WoWForeverAddons.pyc")
-	if !noBytecode {
-		if a, err := os.Stat(pyc); err == nil {
-			if b, err := os.Stat(pyw); err == nil && a.ModTime().After(b.ModTime()) && a.Size() > 1000 {
-				return pyc
-			}
-		}
-	}
-	return pyw
+	return filepath.Join(dir, "WoWForeverAddons.pyw")
 }
-
-var noBytecode bool
 
 func backendCmd(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command(filepath.Join(dir, "python", "pythonw.exe"), append([]string{script(dir)}, args...)...)
@@ -499,12 +488,6 @@ func startBackend(dir string) (string, error) {
 		case <-exited:
 			if b, err := os.ReadFile(ready); err == nil && strings.HasPrefix(string(b), "http://127.0.0.1:") {
 				return strings.TrimSpace(string(b)), nil // it handed over to a copy that was already running
-			}
-			if !noBytecode && strings.HasSuffix(cmd.Args[1], ".pyc") {
-				logf("the compiled copy didn't start; using the .pyw")
-				os.Remove(cmd.Args[1])
-				noBytecode = true
-				return startBackend(dir)
 			}
 			return "", errors.New("it stopped right after starting")
 		case <-time.After(100 * time.Millisecond):

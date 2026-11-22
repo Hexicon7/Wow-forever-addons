@@ -4,7 +4,9 @@ os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
 sys.path.insert(0, str(Path(__file__).parent)); import fake_cf
 fake_cf.start(); T = fake_cf.toc
 import importlib.machinery, importlib.util
-l = importlib.machinery.SourceFileLoader("w", "/home/claude/app/WoWForeverAddons.pyw"); sp = importlib.util.spec_from_loader("w", l); W = importlib.util.module_from_spec(sp); l.exec_module(W)
+from wfam_load import W, mod
+S_ = mod("system")
+os.environ["WFAM_SCRIPT"] = "/home/claude/app/WoWForeverAddons.pyw"
 fails = 0
 def check(c, m):
     global fails; print(("PASS " if c else "FAIL ") + m); fails += 0 if c else 1
@@ -19,22 +21,22 @@ args = W.app_window_args("C:/Edge/msedge.exe", "http://127.0.0.1:47811/")
 check(args[1] == "--app=http://127.0.0.1:47811/" and any(a.startswith("--user-data-dir=") for a in args), "window launched in app mode with its own profile")
 # shortcut script (simulate Windows)
 captured = {}
-W.os_name_backup = W.os.name
+
 class FakeRun:
     def __call__(self, cmd, **kw):
         captured["cmd"] = cmd
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()
-real_run = W.subprocess.run; W.subprocess.run = FakeRun()
-real_os = W.os
+real_run = S_.subprocess.run; S_.subprocess.run = FakeRun()
+real_os = S_.os
 class FakeOs:
     name = "nt"
     def __getattr__(self, k): return getattr(real_os, k)
-W.os = FakeOs()
+S_.os = FakeOs()
 try:
     W.create_shortcuts()
 finally:
-    W.os = real_os; W.subprocess.run = real_run
+    S_.os = real_os; S_.subprocess.run = real_run
 ps = base64.b64decode(captured["cmd"][-1]).decode("utf-16-le")
 check("GetFolderPath('Desktop')" in ps and "GetFolderPath('Programs')" in ps and "WoW Forever Addons.lnk" in ps and "IconLocation" in ps and "WoWForeverAddons.pyw" in ps, "shortcut script targets desktop + Start menu with icon")
 print(ps)

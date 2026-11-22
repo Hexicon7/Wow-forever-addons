@@ -18,9 +18,7 @@ os.environ["WFAM_EXTRA_WOW_ROOT"] = str(wow)
 (addons / "Questie").mkdir(); (addons / "Questie" / "Questie.toc").write_text(fake_cf.toc("Questie", "12.4.0", "11507", pid=1001))
 (addons / "OldThing").mkdir(); (addons / "OldThing" / "OldThing.toc").write_text(fake_cf.toc("Old Thing", "0.9", "11507"))
 
-loader = importlib.machinery.SourceFileLoader("wfam", "/home/claude/app/WoWForeverAddons.pyw")
-spec = importlib.util.spec_from_loader("wfam", loader)
-W = importlib.util.module_from_spec(spec); loader.exec_module(W)
+from wfam_load import W
 
 fails = 0
 def check(cond, msg):

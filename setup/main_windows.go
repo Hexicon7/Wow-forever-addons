@@ -16,7 +16,10 @@ import (
 )
 
 //go:embed payload/WoWForeverAddons.pyw
-var appPyw []byte
+var appPyw []byte // starts the program
+
+//go:embed payload/wfam.zip
+var appZip []byte // the program itself: the wfam package, compiled ahead of time for the Python we install
 
 //go:embed payload/README.txt
 var readmeTxt []byte
@@ -212,8 +215,10 @@ func doInstall(p paths, pr *progress) error {
 	pyw := filepath.Join(p.dest, "WoWForeverAddons.pyw")
 	ico := filepath.Join(p.dest, "icon.ico")
 	appExe := filepath.Join(p.dest, appExeName)
-	files := map[string][]byte{pyw: appPyw, filepath.Join(p.dest, "README.txt"): readmeTxt, ico: iconIco, appExe: launcherExe,
+	files := map[string][]byte{pyw: appPyw, filepath.Join(p.dest, "wfam.zip"): appZip,
+		filepath.Join(p.dest, "README.txt"): readmeTxt, ico: iconIco, appExe: launcherExe,
 		filepath.Join(p.dest, "WebView2Loader.dll"): webView2Loader}
+	os.Remove(filepath.Join(p.dest, "WoWForeverAddons.pyc")) // compiled copy older versions kept next to the .pyw
 	for f, b := range files {
 		if err := os.WriteFile(f, b, 0644); err != nil {
 			return err

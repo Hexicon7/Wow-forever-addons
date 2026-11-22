@@ -17,15 +17,35 @@ by `.github/workflows/release.yml`.
 
 | Folder | What |
 |---|---|
-| `app/` | The manager itself (`WoWForeverAddons.pyw`, Python standard library only) and its interface (`ui/page.html`, built into the .pyw). |
+| `app/` | The manager: the `wfam` package (Python standard library only) and `WoWForeverAddons.pyw`, which starts it. See below. |
 | `desktop/` | `WoW Forever Addons.exe`: the program window (Microsoft WebView2), tray icon and background updates. Go. |
 | `setup/` | `WoWForeverAddons-Setup.exe`: installer, updater and uninstaller. Go, no dependencies. |
 | `tests/` | Tests against fake CurseForge / Wago / GitHub servers (`python3 tests/test_*.py`, needs Playwright for the UI ones). |
 | `tools/` | Build helpers. |
 
+## The manager's code (`app/wfam`)
+
+| Module | What |
+|---|---|
+| `config`, `errors`, `util` | Constants and defaults, the exceptions shown to the user, small helpers |
+| `net` | HTTPS with kept-alive connections; which API key may go to which host |
+| `addonfiles` | `.toc` files, zips, folder fingerprints, `AddOns.txt`, SavedVariables (BugGrabber) |
+| `sources` | CurseForge, GitHub, tukui.org, Wago, wago.io |
+| `system` | WoW folders, the game process, Windows autostart / shortcuts, the icon |
+| `store` | `config.json` and `state.json` |
+| `manager/` | The manager, one mixin per area: install, updates, Wago, GitHub, tukui, auras, backups, setup sync, … |
+| `server`, `webui`, `ui/` | The local web server the window talks to, and the page (`index.html`, `app.css`, `app.js`) |
+| `main` | Command line and start-up |
+
+Modules only import from the ones above them in this table, so there are no import cycles.
+Run it from the source with `python3 app/WoWForeverAddons.pyw` (it uses `app/wfam`). The Setup ships
+`wfam.zip` instead: the same package with its bytecode compiled ahead of time (`tools/build_zip.py`),
+so nothing is compiled when the program starts.
+
 ## Building
 
-On Linux: Go 1.24+, `llvm-windres` and Python 3, then `./build.sh` → `dist/WoWForeverAddons-Setup-<version>.exe`.
+On Linux: Go 1.24+, `llvm-windres` and Python 3.13 (the version the Setup installs, so the shipped bytecode
+matches), then `./build.sh` → `dist/WoWForeverAddons-Setup-<version>.exe`. `ruff check app` should pass.
 
 ## Third-party code
 

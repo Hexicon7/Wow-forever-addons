@@ -43,10 +43,8 @@ _APP = []
 
 def app_module():
     if not _APP:
-        import importlib.machinery, importlib.util
-        l = importlib.machinery.SourceFileLoader("wfam_for_fake", "/home/claude/app/WoWForeverAddons.pyw")
-        sp = importlib.util.spec_from_loader("wfam_for_fake", l); m = importlib.util.module_from_spec(sp); l.exec_module(m)
-        _APP.append(m)
+        from wfam_load import W
+        _APP.append(W)
     return _APP[0]
 
 
@@ -453,7 +451,7 @@ def start(port=0):
     global BASE
     srv = ThreadingHTTPServer(("127.0.0.1", port), H)
     BASE = f"http://127.0.0.1:{srv.server_address[1]}"
-    import os; os.environ["WFAM_GITHUB_API"] = BASE + "/gh"
+    import os; os.environ["WFAM_GITHUB_API"] = BASE + "/gh"; os.environ["WFAM_API_BASE"] = BASE
     global WBASE
     WBASE = f"http://localhost:{srv.server_address[1]}/wago"
     os.environ["WFAM_WAGO_BASE"] = WBASE

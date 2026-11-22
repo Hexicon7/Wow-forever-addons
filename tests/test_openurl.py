@@ -19,7 +19,7 @@ try:
     for bad in ("file:///C:/Windows/System32/calc.exe", "javascript:alert(1)", "ms-settings:", "https://"):
         r = post("/api/open_url", {"url": bad}); check(not r.get("ok"), f"refused: {bad}")
     r = post("/api/open_url", {"url": "https://example.com"}, hdr=False); check(not r.get("ok"), "refused without the app's header (other websites can't use it)")
-    html = urllib.request.urlopen(B+"/").read().decode()
+    html = urllib.request.urlopen(B+"/app.js").read().decode()
     check("window.chrome.webview" in html and "/api/open_url" in html, "page sends outside links to the browser inside the app window")
     pg = urllib.request.urlopen(B+"/api/ping").read().decode(); check('"version"' in pg and 'WoW Forever Addon Manager' in pg, "ping reports the version: " + pg)
 finally:

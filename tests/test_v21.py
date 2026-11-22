@@ -27,16 +27,16 @@ check(any("Checking for updates" in l["msg"] for l in st()["logs"]), "info is fe
 p.kill()
 # proxy fallback path works (urllib) - call it directly
 import importlib.machinery, importlib.util
-l = importlib.machinery.SourceFileLoader("w", "/home/claude/app/WoWForeverAddons.pyw"); sp = importlib.util.spec_from_loader("w", l); W = importlib.util.module_from_spec(sp); l.exec_module(W)
+from wfam_load import W, mod
 code, h, data = W._urllib_call("GET", fake_cf.BASE + "/v1/mods/1001", {"x-api-key": fake_cf.KEY, "User-Agent": "t"}, None, None, (), 10**6, 10)
 check(code == 200 and json.loads(data)["data"]["slug"] == "questie", "proxy fallback (urllib) request works")
 code, h, data = W._urllib_call("GET", fake_cf.BASE + "/v1/mods/999999", {"x-api-key": fake_cf.KEY}, None, None, (), 10**6, 10)
 check(code == 404, "proxy fallback returns HTTP errors as codes")
 # keep-alive reuse + stale connection retry
-W.API_BASE = fake_cf.BASE
+mod("sources").API_BASE = fake_cf.BASE
 cf = W.CurseForge(fake_cf.KEY); fake_cf.STATS.update(conns=0, reqs=0)
 for _ in range(5): cf.mod(1001)
 check(fake_cf.STATS["conns"] == 1 and fake_cf.STATS["reqs"] == 5, f"5 requests over 1 connection: {fake_cf.STATS}")
-for c in W._tls.pool.values(): c.sock.close()        # simulate the server dropping an idle connection
+for c in mod("net")._tls.pool.values(): c.sock.close()        # simulate the server dropping an idle connection
 check(cf.mod(1001)["slug"] == "questie", "stale connection is retried transparently")
 print("FAILURES:", fails)

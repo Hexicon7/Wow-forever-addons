@@ -4,7 +4,7 @@ Usage: python3 tools/publish_update.py "What changed"   (then commit and push)""
 import hashlib, json, re, sys
 from pathlib import Path
 root = Path(__file__).resolve().parent.parent
-ver = re.search(r'APP_VERSION = "([^"]+)"', (root / "app/WoWForeverAddons.pyw").read_text(encoding="utf-8")).group(1)
+ver = re.search(r'APP_VERSION = "([^"]+)"', (root / "app/wfam/config.py").read_text(encoding="utf-8")).group(1)
 exe = root / "dist" / f"WoWForeverAddons-Setup-{ver}.exe"
 data = exe.read_bytes()
 assert data[:2] == b"MZ", "not a Windows program"
